@@ -149,6 +149,33 @@ function formatDate(dateStr) {
   } catch { return dateStr; }
 }
 
+function renderInsightCard(summary, budget) {
+  const container = document.getElementById("insightGrid");
+  if (!container || !summary) return;
+
+  const topCategory = summary.categories && summary.categories.length
+    ? `${summary.categories[0].category} ${formatAmount(summary.categories[0].total)}`
+    : "本月还没有支出分类";
+
+  let budgetText = "还没设置预算，可以去预算管理页加上月预算。";
+  if (budget > 0) {
+    const remain = budget - (summary.expense || 0);
+    budgetText = remain >= 0
+      ? `预算还剩 ${formatAmount(remain)}，保持得不错。`
+      : `预算已超出 ${formatAmount(Math.abs(remain))}，后半月要收一收。`;
+  }
+
+  const balanceText = summary.balance >= 0
+    ? `本月结余 ${formatAmount(summary.balance)}，现金流是正的。`
+    : `本月净支出 ${formatAmount(Math.abs(summary.balance))}，注意平衡收入和支出。`;
+
+  container.innerHTML = `
+    <div class="insight-pill">🍓 最高消费分类：${topCategory}</div>
+    <div class="insight-pill">🧁 ${budgetText}</div>
+    <div class="insight-pill">🌷 ${balanceText}</div>
+  `;
+}
+
 const CATEGORY_EMOJI = {
   "餐饮": "🍜", "交通": "🚕", "购物": "🛍️", "娱乐": "🎮",
   "居家": "🏠", "医疗": "💊", "教育": "📚", "人情": "🧧",
@@ -321,6 +348,8 @@ async function loadDashboard() {
       : new Date(currentYear, currentMonth, 0).getDate();
   const avgEl = document.getElementById("dailyAvg");
   if (avgEl) avgEl.textContent = formatAmount(daysElapsed > 0 ? s.expense / daysElapsed : 0);
+
+  renderInsightCard(s, currentBudget);
 
   renderCategoryChart(s.categories);
   renderTrendChart(trendData.trend);
