@@ -245,29 +245,97 @@ CATEGORY_KEYWORDS = {
     "其他": []
 }
 
+INCOME_KEYWORDS = ["收入", "工资", "薪资", "奖金", "报销", "退款", "返现", "收到", "到账"]
+SPLIT_HINT_WORDS = ["早餐", "早饭", "中饭", "午饭", "午餐", "晚饭", "晚餐", "宵夜", "上午", "中午", "下午", "晚上"]
+
+
+def extract_primary_amount(text):
+    """提取最可能的金额，尽量忽略日期/月份等数字。"""
+    candidates = []
+
+    for match in re.finditer(r'[¥￥]\s*(\d+(?:\.\d+)?)', text):
+        candidates.append(float(match.group(1)))
+
+    for match in re.finditer(r'(\d+(?:\.\d+)?)\s*(?:块钱|块|元钱|元|RMB)', text, flags=re.IGNORECASE):
+        candidates.append(float(match.group(1)))
+
+    for match in re.finditer(r'(?<![\d.])(\d+(?:\.\d+)?)(?![\d.])', text):
+        tail = text[match.end():match.end() + 1]
+        if tail in {"年", "月", "日", "号"}:
+            continue
+        candidates.append(float(match.group(1)))
+
+    return candidates[-1] if candidates else None
+
+
+def split_bill_entries(text):
+    amount_matches = list(re.finditer(r'[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:块钱|块|元钱|元|RMB)|(?<![\d.])\d+(?:\.\d+)?(?![\d.])', text, flags=re.IGNORECASE))
+    if len(amount_matches) <= 1:
+        return []
+
+    segments = []
+    start = 0
+    for index, match in enumerate(amount_matches):
+        end = match.end()
+        boundary = end
+        while boundary < len(text) and text[boundary] in " ，,；;、/":
+            boundary += 1
+
+        if index + 1 < len(amount_matches):
+            next_start = amount_matches[index + 1].start()
+            segment = text[start:next_start].strip(" ，,；;、/")
+            if segment:
+                segments.append(segment)
+            start = next_start
+        else:
+            segment = text[start:].strip(" ，,；;、/")
+            if segment:
+                segments.append(segment)
+
+    parsed_segments = [seg for seg in segments if extract_primary_amount(seg) is not None]
+    if len(parsed_segments) >= 2:
+        return parsed_segments
+
+    if any(word in text for word in SPLIT_HINT_WORDS):
+        fallback_segments = []
+        pattern = r'([^，,；;。]+?(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:块钱|块|元钱|元|RMB)|(?<![\d.])\d+(?:\.\d+)?(?![\d.])))'
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            segment = match.group(1).strip(" ，,；;、/")
+            if segment and extract_primary_amount(segment) is not None:
+                fallback_segments.append(segment)
+        if len(fallback_segments) >= 2:
+            return fallback_segments
+    return []
+
+
+def parse_budget_command(text, now):
+    if "预算" not in text:
+        return None
+
+    if any(kw in text for kw in ["查询", "看看", "多少", "剩余", "还剩", "进度"]):
+        return None
+
+    amount = extract_primary_amount(text)
+    if amount is None or amount <= 0:
+        return None
+
+    ym = extract_year_month_query(text, now)
+    if ym:
+        start_date, _, _ = ym
+        return start_date.year, start_date.month, amount
+    return now.year, now.month, amount
+
 def parse_bill(text):
     """解析自然语言账单，返回 (amount, category, description, bill_type)"""
     text = text.strip()
 
-    # 提取金额（支持多种格式：10块、10元、10.5、¥10）
-    amount_patterns = [
-        r'[¥￥]\s*(\d+(?:\.\d+)?)',
-        r'(\d+(?:\.\d+)?)\s*(?:块钱|块|元钱|元|RMB)',
-        r'(\d+(?:\.\d+)?)',
-    ]
-    amount = None
-    for pattern in amount_patterns:
-        match = re.search(pattern, text)
-        if match:
-            amount = float(match.group(1))
-            break
+    amount = extract_primary_amount(text)
 
     if amount is None:
         return None
 
     # 判断收入还是支出
-    income_keywords = ["收入", "工资", "薪资", "奖金", "报销", "退款", "返现", "收到", "到账"]
-    bill_type = "income" if any(kw in text for kw in income_keywords) else "expense"
+    bill_type = "income" if any(kw in text for kw in INCOME_KEYWORDS) else "expense"
 
     # 识别分类
     category = "其他"
@@ -283,7 +351,7 @@ def parse_bill(text):
         category = "收入"
 
     # 生成描述（去除金额部分，保留关键词）
-    description = re.sub(r'[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:块钱|块|元钱|元|RMB)', '', text).strip()
+    description = re.sub(r'[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:块钱|块|元钱|元|RMB)|(?<![\d.])\d+(?:\.\d+)?(?![\d.])', '', text).strip(" ，,；;、/")
     if not description:
         description = text
 
@@ -581,6 +649,7 @@ def chat():
                 "区间：3月1日到3月15日消费\n"
                 "关键词：查滴滴 / 统计星巴克\n"
                 "趋势：本周趋势\n"
+                "预算：这个月预算1800 / 3月预算2000\n"
                 "可视化：可视化（返回网页链接）\n"
                 "纠错：撤销上一笔 / 恢复上一笔"
             ),
@@ -596,6 +665,32 @@ def chat():
         })
 
     now = datetime.now()
+    budget_command = parse_budget_command(message, now)
+    if budget_command:
+        year, month, amount = budget_command
+        conn_budget = get_db()
+        existing = conn_budget.execute(
+            "SELECT id FROM budgets WHERE user_id=? AND year=? AND month=?",
+            (user_id, year, month),
+        ).fetchone()
+        if existing:
+            conn_budget.execute(
+                "UPDATE budgets SET amount=? WHERE id=?",
+                (amount, existing["id"]),
+            )
+        else:
+            conn_budget.execute(
+                "INSERT INTO budgets (user_id, year, month, amount) VALUES (?,?,?,?)",
+                (user_id, year, month, amount),
+            )
+        conn_budget.commit()
+        conn_budget.close()
+        return jsonify({
+            "success": True,
+            "type": "budget",
+            "reply": f"🎯 已设置 {year}年{month}月预算：¥{amount:.2f}",
+        })
+
     if any(kw in message for kw in ["上周", "上星期"]):
         start_this_week = now - timedelta(days=now.weekday())
         start_last_week = start_this_week - timedelta(days=7)
@@ -641,6 +736,46 @@ def chat():
             reply = build_keyword_summary_reply(conn_q, user_id, keyword, start_date, end_date, label)
             conn_q.close()
             return jsonify({"success": True, "reply": reply, "type": "query"})
+
+    multi_entries = split_bill_entries(message)
+    if len(multi_entries) >= 2:
+        parsed_entries = []
+        for entry in multi_entries:
+            parsed = parse_bill(entry)
+            if parsed is not None:
+                parsed_entries.append((entry, parsed))
+
+        if len(parsed_entries) >= 2:
+            conn_multi = get_db()
+            inserted = []
+            for original_text, parsed in parsed_entries:
+                amount, category, description, bill_type = parsed
+                cursor = conn_multi.execute(
+                    "INSERT INTO bills (user_id, amount, category, description, bill_type, created_at, year, month, day) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (user_id, amount, category, description, bill_type, now.isoformat(), now.year, now.month, now.day)
+                )
+                inserted.append({
+                    "id": cursor.lastrowid,
+                    "amount": amount,
+                    "category": category,
+                    "description": description,
+                    "bill_type": bill_type,
+                    "source": original_text,
+                })
+            conn_multi.commit()
+            conn_multi.close()
+
+            lines = [f"🧾 已拆分记录 {len(inserted)} 笔："]
+            for item in inserted:
+                prefix = "收入" if item["bill_type"] == "income" else "支出"
+                lines.append(f"- {item['category']} {prefix} ¥{item['amount']:.2f}（{item['description']}）")
+            lines.append("如有误，可发送“撤销上一笔”。")
+            return jsonify({
+                "success": True,
+                "reply": "\n".join(lines),
+                "type": "add-multi",
+                "bills": inserted,
+            })
 
     result = parse_bill(message)
     if result is None:

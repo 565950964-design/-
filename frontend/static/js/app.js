@@ -320,7 +320,7 @@ async function sendChat(forceText = "") {
     });
     const data = await res.json();
     appendBotBillMessage(data);
-    if (data.success && ["add", "undo"].includes(data.type)) {
+    if (data.success && ["add", "add-multi", "undo", "restore", "budget"].includes(data.type)) {
       refreshCurrentPage();
     }
   } catch (e) {

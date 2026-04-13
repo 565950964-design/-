@@ -17,6 +17,7 @@ from wechatpy.exceptions import InvalidSignatureException
 WECHAT_TOKEN = os.getenv("WECHAT_TOKEN", "your_wechat_token_here")
 WECHAT_ADMIN_OPENID = os.getenv("WECHAT_ADMIN_OPENID", "")
 WEB_BASE_URL = os.getenv("WEB_BASE_URL", "").strip()
+SPLIT_HINT_WORDS = ["早餐", "早饭", "中饭", "午饭", "午餐", "晚饭", "晚餐", "宵夜", "上午", "中午", "下午", "晚上"]
 
 
 def is_query_intent(text):
@@ -52,6 +53,70 @@ def parse_compact_date(date_str, fallback_year):
     if md:
         return datetime(fallback_year, int(md.group(1)), int(md.group(2)))
     return None
+
+
+def extract_primary_amount(text):
+    candidates = []
+    for match in re.finditer(r'[¥￥]\s*(\d+(?:\.\d+)?)', text):
+        candidates.append(float(match.group(1)))
+    for match in re.finditer(r'(\d+(?:\.\d+)?)\s*(?:块钱|块|元钱|元|RMB)', text, flags=re.IGNORECASE):
+        candidates.append(float(match.group(1)))
+    for match in re.finditer(r'(?<![\d.])(\d+(?:\.\d+)?)(?![\d.])', text):
+        tail = text[match.end():match.end() + 1]
+        if tail in {"年", "月", "日", "号"}:
+            continue
+        candidates.append(float(match.group(1)))
+    return candidates[-1] if candidates else None
+
+
+def split_bill_entries(text):
+    amount_matches = list(re.finditer(r'[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:块钱|块|元钱|元|RMB)|(?<![\d.])\d+(?:\.\d+)?(?![\d.])', text, flags=re.IGNORECASE))
+    if len(amount_matches) <= 1:
+        return []
+
+    segments = []
+    start = 0
+    for index, match in enumerate(amount_matches):
+        if index + 1 < len(amount_matches):
+            next_start = amount_matches[index + 1].start()
+            segment = text[start:next_start].strip(" ，,；;、/")
+            if segment:
+                segments.append(segment)
+            start = next_start
+        else:
+            segment = text[start:].strip(" ，,；;、/")
+            if segment:
+                segments.append(segment)
+
+    parsed_segments = [seg for seg in segments if extract_primary_amount(seg) is not None]
+    if len(parsed_segments) >= 2:
+        return parsed_segments
+
+    if any(word in text for word in SPLIT_HINT_WORDS):
+        fallback_segments = []
+        pattern = r'([^，,；;。]+?(?:[¥￥]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*(?:块钱|块|元钱|元|RMB)|(?<![\d.])\d+(?:\.\d+)?(?![\d.])))'
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            segment = match.group(1).strip(" ，,；;、/")
+            if segment and extract_primary_amount(segment) is not None:
+                fallback_segments.append(segment)
+        if len(fallback_segments) >= 2:
+            return fallback_segments
+    return []
+
+
+def parse_budget_command(text, now):
+    if "预算" not in text:
+        return None
+    if any(kw in text for kw in ["查询", "看看", "多少", "剩余", "还剩", "进度"]):
+        return None
+    amount = extract_primary_amount(text)
+    if amount is None or amount <= 0:
+        return None
+    ym = extract_year_month_query(text, now)
+    if ym:
+        start_date, _, _ = ym
+        return start_date.year, start_date.month, amount
+    return now.year, now.month, amount
 
 
 def extract_date_range_query(text, now):
@@ -582,6 +647,46 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
         conn.close()
         return reply
 
+    budget_command = parse_budget_command(text, now)
+    if budget_command:
+        year, month, amount = budget_command
+        existing = conn.execute(
+            "SELECT id FROM budgets WHERE user_id=? AND year=? AND month=?",
+            (user_id, year, month),
+        ).fetchone()
+        if existing:
+            conn.execute("UPDATE budgets SET amount=? WHERE id=?", (amount, existing["id"]))
+        else:
+            conn.execute(
+                "INSERT INTO budgets (user_id, year, month, amount) VALUES (?,?,?,?)",
+                (user_id, year, month, amount),
+            )
+        conn.commit()
+        conn.close()
+        return f"🎯 已设置 {year}年{month}月预算：¥{amount:.2f}"
+
+    multi_entries = split_bill_entries(text)
+    if len(multi_entries) >= 2:
+        parsed_entries = []
+        for entry in multi_entries:
+            parsed = parse_bill_func(entry)
+            if parsed is not None:
+                parsed_entries.append(parsed)
+
+        if len(parsed_entries) >= 2:
+            inserted_lines = [f"🧾 已拆分记录 {len(parsed_entries)} 笔："]
+            for amount, category, description, bill_type in parsed_entries:
+                conn.execute(
+                    "INSERT INTO bills (user_id, amount, category, description, bill_type, created_at, year, month, day) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (user_id, amount, category, description, bill_type, now.isoformat(), now.year, now.month, now.day)
+                )
+                prefix = "收入" if bill_type == "income" else "支出"
+                inserted_lines.append(f"- {category} {prefix} ¥{amount:.2f}（{description}）")
+            conn.commit()
+            conn.close()
+            inserted_lines.append("如有误，可发送“撤销上一笔”。")
+            return "\n".join(inserted_lines)
+
     keyword_match = re.search(r"(?:查|搜索|统计|看看)\s*([\w\u4e00-\u9fff]{1,20})", text)
     if keyword_match and ("关键词" in text or not any(k in text for k in ["本月", "上月", "上周", "今天", "昨天"])):
         keyword = keyword_match.group(1).strip()
@@ -614,6 +719,7 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
             "扩展查询：发送「3月消费」「上周消费」「3月1日到3月15日消费」\n"
             "关键词：发送「查滴滴」「统计星巴克」\n"
             "趋势：发送「本周趋势」\n"
+            "预算：发送「这个月预算1800」「3月预算2000」\n"
             "图表：发送「可视化」获取网页看板链接\n"
             "纠错：发送「撤销上一笔」「恢复上一笔」\n"
             "申请：发送「申请使用 昵称:xx 尾号:1234 理由:xxx」\n"
