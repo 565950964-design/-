@@ -366,6 +366,9 @@ async function sendChat(forceText = "") {
     if (data.success && ["add", "add-multi", "undo", "restore", "budget"].includes(data.type)) {
       refreshCurrentPage();
     }
+    if (data.success && data.link) {
+      window.open(data.link, "_blank", "noopener,noreferrer");
+    }
   } catch (e) {
     appendMessage("网络错误，请重试 😢");
   }
@@ -659,6 +662,10 @@ function renderUsersList(containerId, users, isPending) {
 
   container.innerHTML = users.map(user => renderUserCard(user, isPending)).join("");
 
+  container.querySelectorAll(".rename-save-btn").forEach(btn => {
+    btn.addEventListener("click", () => saveUserProfile(btn.dataset.userId));
+  });
+
   container.querySelectorAll(".user-action-btn.view").forEach(btn => {
     btn.addEventListener("click", () => switchToUserBook(btn.dataset.userId));
   });
@@ -674,6 +681,7 @@ function renderUserCard(user, isPending) {
   const requestedAt = formatDateTime(user.requested_at);
   const approvedAt = formatDateTime(user.approved_at);
   const badgeText = user.status === "admin" ? "管理员" : user.status === "approved" ? "已批准" : user.status === "rejected" ? "已拒绝" : "待审批";
+  const key = encodeURIComponent(user.user_id);
   return `
     <div class="user-card" data-user-id="${escapeHtml(user.user_id)}">
       <div class="user-card-header">
@@ -693,6 +701,10 @@ function renderUserCard(user, isPending) {
       <div class="user-card-note">系统备注：${escapeHtml(displayName)}</div>
       <div class="user-card-note">申请昵称：${escapeHtml(applyNickname || "未填写")}</div>
       <div class="user-card-note">手机尾号：${escapeHtml(applyTail || "未填写")}</div>
+      <div class="user-card-remark-row">
+        <input type="text" class="form-input remark-input" id="rename-${key}" value="${escapeHtml(displayName === "未备注用户" ? "" : displayName)}" placeholder="管理员可设置中文账本名" />
+        <button class="rename-save-btn" data-user-id="${user.user_id}">保存账本名</button>
+      </div>
       <div class="user-actions">
         <button class="user-action-btn view" data-user-id="${user.user_id}">查看账本</button>
       </div>
@@ -713,34 +725,25 @@ function escapeHtml(text) {
 
 async function saveUserProfile(userId) {
   const key = encodeURIComponent(userId);
-  const remarkInput = document.getElementById(`remark-${key}`);
-  const applyNameInput = document.getElementById(`apply-name-${key}`);
-  const applyTailInput = document.getElementById(`apply-tail-${key}`);
-  const applyNoteInput = document.getElementById(`apply-note-${key}`);
+  const renameInput = document.getElementById(`rename-${key}`);
 
-  if (!remarkInput || !applyNameInput || !applyTailInput || !applyNoteInput) {
+  if (!renameInput) {
     showToast("用户字段读取失败 ⚠️");
     return;
   }
 
-  const displayName = remarkInput.value.trim();
-  const applyNickname = applyNameInput.value.trim();
-  const applyContactTail = applyTailInput.value.trim();
-  const noteText = applyNoteInput.value.trim();
+  const displayName = renameInput.value.trim();
 
   const res = await adminFetch(`${API}/api/wechat-users/${encodeURIComponent(userId)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      display_name: displayName,
-      apply_nickname: applyNickname,
-      apply_contact_tail: applyContactTail,
-      requested_note: noteText
+      display_name: displayName
     })
   });
   const data = await res.json();
   if (data.success) {
-    showToast("备注名已保存 ✅");
+    showToast("账本名已保存 ✅");
     loadUsers();
   } else {
     showToast(data.message || "保存失败 ⚠️");

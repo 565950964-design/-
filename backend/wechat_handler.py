@@ -613,7 +613,8 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
 
     # 查询指令
     if any(kw in text for kw in ["可视化", "图表", "趋势图", "仪表盘", "看图", "看报表", "看网页"]):
-        link = f"{WEB_BASE_URL}/?user_id={user_id}" if WEB_BASE_URL else "（请联系管理员配置 WEB_BASE_URL 后可直接打开网页）"
+        base_url = WEB_BASE_URL.rstrip("/") if WEB_BASE_URL else request.url_root.rstrip("/")
+        link = f"{base_url}/?user_id={user_id}"
         conn.close()
         return f"📈 可视化看板链接：\n{link}"
 

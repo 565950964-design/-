@@ -1353,19 +1353,20 @@ def update_wechat_user(user_id):
         return auth_error
 
     data = request.get_json() or {}
-    display_name = (data.get("display_name") or "").strip()
-    apply_nickname = (data.get("apply_nickname") or "").strip()
-    apply_contact_tail = (data.get("apply_contact_tail") or "").strip()
-    requested_note = (data.get("requested_note") or "").strip()
 
     conn = get_db()
     existing = conn.execute(
-        "SELECT user_id FROM wechat_users WHERE user_id=?",
+        "SELECT user_id, display_name, apply_nickname, apply_contact_tail, requested_note FROM wechat_users WHERE user_id=?",
         (user_id,),
     ).fetchone()
     if not existing:
         conn.close()
         return jsonify({"success": False, "message": "未找到该用户"}), 404
+
+    display_name = (data["display_name"].strip() if "display_name" in data and data.get("display_name") is not None else existing["display_name"])
+    apply_nickname = (data["apply_nickname"].strip() if "apply_nickname" in data and data.get("apply_nickname") is not None else existing["apply_nickname"])
+    apply_contact_tail = (data["apply_contact_tail"].strip() if "apply_contact_tail" in data and data.get("apply_contact_tail") is not None else existing["apply_contact_tail"])
+    requested_note = (data["requested_note"].strip() if "requested_note" in data and data.get("requested_note") is not None else existing["requested_note"])
 
     conn.execute(
         "UPDATE wechat_users SET display_name=?, apply_nickname=?, apply_contact_tail=?, requested_note=? WHERE user_id=?",

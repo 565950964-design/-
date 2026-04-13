@@ -1306,6 +1306,23 @@ body {
   background: rgba(51, 154, 240, 0.18);
 }
 
+.rename-save-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+  background: rgba(103, 197, 154, 0.16);
+  color: #2b8a3e;
+  white-space: nowrap;
+}
+
+.rename-save-btn:hover {
+  background: rgba(103, 197, 154, 0.26);
+}
+
 .user-actions {
   display: flex;
   flex-wrap: wrap;
