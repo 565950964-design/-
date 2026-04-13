@@ -224,6 +224,27 @@ body {
   min-width: 360px;
 }
 
+.user-token-input {
+  max-width: 260px;
+}
+
+.user-token-btn {
+  border: none;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(108, 99, 255, 0.12);
+  color: var(--primary-dark);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.user-token-btn:hover {
+  background: rgba(108, 99, 255, 0.2);
+}
+
 .user-switcher-input {
   min-width: 0;
 }

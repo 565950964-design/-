@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 import csv
 import io
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect
 from flask_cors import CORS
 import sqlite3
 
@@ -18,14 +18,21 @@ except Exception:
     register_wechat_routes = None
 
 app = Flask(__name__, static_folder="../frontend", static_url_path="")
-CORS(app)
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "../data/bills.db")
 DEFAULT_USER_ID = "web-local"
 ADMIN_WEB_TOKEN = os.getenv("ADMIN_WEB_TOKEN", "")
+USER_WEB_TOKEN = os.getenv("USER_WEB_TOKEN", "")
+SECURITY_MODE = os.getenv("SECURITY_MODE", "compat").strip().lower()
+STRICT_SECURITY = SECURITY_MODE == "strict"
+CORS_ALLOW_ORIGINS = [item.strip() for item in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if item.strip()]
 APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
 APP_PORT = int(os.getenv("PORT", os.getenv("APP_PORT", "5000")))
 APP_DEBUG = os.getenv("FLASK_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
+FORCE_HTTPS = os.getenv("FORCE_HTTPS", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+if CORS_ALLOW_ORIGINS:
+    CORS(app, resources={r"/api/*": {"origins": CORS_ALLOW_ORIGINS}})
 
 # ==================== 数据库初始化 ====================
 
@@ -83,6 +90,56 @@ def require_admin_auth():
     if incoming != ADMIN_WEB_TOKEN:
         return jsonify({"success": False, "message": "管理员鉴权失败"}), 401
     return None
+
+
+def require_user_auth():
+    """用户接口鉴权：strict 模式启用后要求 X-User-Token。"""
+    if not STRICT_SECURITY:
+        return None
+    if not USER_WEB_TOKEN:
+        return jsonify({"success": False, "message": "服务端未配置 USER_WEB_TOKEN"}), 500
+
+    incoming = (
+        request.headers.get("X-User-Token")
+        or request.args.get("user_token")
+        or ((request.get_json(silent=True) or {}).get("user_token"))
+        or ""
+    )
+    if incoming != USER_WEB_TOKEN:
+        return jsonify({"success": False, "message": "用户鉴权失败"}), 401
+    return None
+
+
+@app.after_request
+def apply_security_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+    resp.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: https:; "
+        "font-src 'self' https://cdn.jsdelivr.net data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'"
+    )
+    return resp
+
+
+@app.before_request
+def enforce_https_if_enabled():
+    if not FORCE_HTTPS:
+        return None
+    if request.is_secure:
+        return None
+    forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").lower()
+    if forwarded_proto == "https":
+        return None
+    https_url = request.url.replace("http://", "https://", 1)
+    return redirect(https_url, code=301)
 
 
 def write_approval_log(conn, user_id, action, operator, channel, note=""):
@@ -423,6 +480,10 @@ def index():
 @app.route("/api/chat", methods=["POST"])
 def chat():
     """处理自然语言记账消息"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     data = request.get_json()
     message = data.get("message", "").strip()
     user_id = data.get("user_id") or DEFAULT_USER_ID
@@ -713,6 +774,10 @@ def chat():
 @app.route("/api/bills", methods=["GET"])
 def get_bills():
     """获取账单列表"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     year = request.args.get("year", datetime.now().year, type=int)
     month = request.args.get("month", datetime.now().month, type=int)
     bill_type = request.args.get("type", "all")
@@ -737,6 +802,10 @@ def get_bills():
 @app.route("/api/summary", methods=["GET"])
 def get_summary():
     """获取月度汇总"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     year = request.args.get("year", datetime.now().year, type=int)
     month = request.args.get("month", datetime.now().month, type=int)
     summary = get_month_summary(year, month, get_request_user_id())
@@ -745,6 +814,10 @@ def get_summary():
 @app.route("/api/budget", methods=["GET", "POST"])
 def budget():
     """设置/获取预算"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     year = request.args.get("year", datetime.now().year, type=int)
     month = request.args.get("month", datetime.now().month, type=int)
     user_id = get_request_user_id()
@@ -781,6 +854,10 @@ def budget():
 @app.route("/api/bills/<int:bill_id>", methods=["DELETE"])
 def delete_bill(bill_id):
     """删除账单"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     user_id = get_request_user_id()
     conn = get_db()
     conn.execute("DELETE FROM bills WHERE id=? AND user_id=?", (bill_id, user_id))
@@ -792,6 +869,10 @@ def delete_bill(bill_id):
 @app.route("/api/bills/latest", methods=["DELETE"])
 def delete_latest_bill():
     """删除当前用户最新一条账单。"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     user_id = get_request_user_id()
     conn = get_db()
     latest = conn.execute(
@@ -810,6 +891,10 @@ def delete_latest_bill():
 @app.route("/api/bills/<int:bill_id>", methods=["PUT"])
 def update_bill(bill_id):
     """更新账单"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     data = request.get_json()
     user_id = data.get("user_id") or get_request_user_id()
     conn = get_db()
@@ -824,6 +909,10 @@ def update_bill(bill_id):
 @app.route("/api/trend", methods=["GET"])
 def get_trend():
     """获取近6个月趋势"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     user_id = get_request_user_id()
     conn = get_db()
     rows = conn.execute("""
@@ -843,6 +932,10 @@ def get_trend():
 @app.route("/api/bills/add", methods=["POST"])
 def add_bill_manual():
     """手动添加账单"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     data = request.get_json()
     now = datetime.now()
     user_id = data.get("user_id") or DEFAULT_USER_ID
@@ -1025,6 +1118,10 @@ def get_approval_logs():
 @app.route("/api/bills/export", methods=["GET"])
 def export_bills():
     """导出当月账单为 CSV（BOM 格式，Excel 直接打开不乱码）"""
+    auth_error = require_user_auth()
+    if auth_error:
+        return auth_error
+
     year = request.args.get("year", datetime.now().year, type=int)
     month = request.args.get("month", datetime.now().month, type=int)
     user_id = get_request_user_id()

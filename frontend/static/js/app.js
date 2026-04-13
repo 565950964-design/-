@@ -3,12 +3,29 @@
 const API = "";  // 同域调用
 const currentUserId = new URLSearchParams(window.location.search).get("user_id") || "web-local";
 const ADMIN_TOKEN_KEY = "bookkeeper_admin_token";
+const USER_TOKEN_KEY = "bookkeeper_user_token";
 let adminToken = localStorage.getItem(ADMIN_TOKEN_KEY) || "";
+let userToken = localStorage.getItem(USER_TOKEN_KEY) || "";
 
 
 function withUserId(path) {
   const separator = path.includes("?") ? "&" : "?";
-  return `${path}${separator}user_id=${encodeURIComponent(currentUserId)}`;
+  const tokenPart = userToken ? `&user_token=${encodeURIComponent(userToken)}` : "";
+  return `${path}${separator}user_id=${encodeURIComponent(currentUserId)}${tokenPart}`;
+}
+
+function getUserHeaders(extraHeaders = {}) {
+  const headers = { ...extraHeaders };
+  if (userToken) {
+    headers["X-User-Token"] = userToken;
+  }
+  return headers;
+}
+
+async function apiFetch(path, options = {}) {
+  const merged = { ...options };
+  merged.headers = getUserHeaders(options.headers || {});
+  return fetch(path, merged);
 }
 
 // ========== 全局状态 ==========
@@ -25,10 +42,13 @@ let currentExpense = 0;
 function initUserSwitcher() {
   const label = document.getElementById("currentUserLabel");
   const input = document.getElementById("userIdInput");
+  const tokenInput = document.getElementById("userTokenInput");
+  const saveTokenBtn = document.getElementById("saveUserTokenBtn");
   const button = document.getElementById("switchUserBtn");
 
   label.textContent = currentUserId;
   input.value = currentUserId === "web-local" ? "" : currentUserId;
+  if (tokenInput) tokenInput.value = userToken;
 
   const switchUser = () => {
     const nextUserId = input.value.trim();
@@ -42,6 +62,18 @@ function initUserSwitcher() {
   };
 
   button.addEventListener("click", switchUser);
+  if (saveTokenBtn && tokenInput) {
+    saveTokenBtn.addEventListener("click", () => {
+      userToken = tokenInput.value.trim();
+      if (userToken) {
+        localStorage.setItem(USER_TOKEN_KEY, userToken);
+        showToast("用户口令已保存 ✅");
+      } else {
+        localStorage.removeItem(USER_TOKEN_KEY);
+        showToast("用户口令已清除");
+      }
+    });
+  }
   input.addEventListener("keydown", event => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -281,7 +313,7 @@ async function sendChat(forceText = "") {
   appendMessage(msg, true);
 
   try {
-    const res = await fetch(`${API}/api/chat`, {
+    const res = await apiFetch(`${API}/api/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: msg, user_id: currentUserId })
@@ -298,7 +330,7 @@ async function sendChat(forceText = "") {
 
 async function deleteChatBill(id) {
   if (!id) return;
-  const res = await fetch(withUserId(`${API}/api/bills/${id}`), { method: "DELETE" });
+  const res = await apiFetch(withUserId(`${API}/api/bills/${id}`), { method: "DELETE" });
   const data = await res.json();
   if (data.success) {
     appendMessage("🗑️ 已撤销这笔误发记录", false);
@@ -321,9 +353,9 @@ document.querySelectorAll(".quick-action-btn").forEach(btn => {
 // ========== 账单总览 ==========
 async function loadDashboard() {
   const [summaryRes, trendRes, budgetRes] = await Promise.all([
-    fetch(withUserId(`${API}/api/summary?year=${currentYear}&month=${currentMonth}`)),
-    fetch(withUserId(`${API}/api/trend`)),
-    fetch(withUserId(`${API}/api/budget?year=${currentYear}&month=${currentMonth}`))
+    apiFetch(withUserId(`${API}/api/summary?year=${currentYear}&month=${currentMonth}`)),
+    apiFetch(withUserId(`${API}/api/trend`)),
+    apiFetch(withUserId(`${API}/api/budget?year=${currentYear}&month=${currentMonth}`))
   ]);
 
   const summaryData = await summaryRes.json();
@@ -720,7 +752,7 @@ function switchToUserBook(userId) {
 // ========== 账单明细 ==========
 async function loadBills() {
   const filterType = document.getElementById("filterType").value;
-  const res = await fetch(withUserId(`${API}/api/bills?year=${currentYear}&month=${currentMonth}&type=${filterType}`));
+  const res = await apiFetch(withUserId(`${API}/api/bills?year=${currentYear}&month=${currentMonth}&type=${filterType}`));
   const data = await res.json();
   billsData = data.bills || [];
   filterAndRenderBills();
@@ -842,7 +874,7 @@ document.getElementById("exportBillsBtn")?.addEventListener("click", () => {
 // ========== 删除账单 ==========
 async function deleteBill(id) {
   if (!confirm("确定要删除这条记录吗？")) return;
-  const res = await fetch(withUserId(`${API}/api/bills/${id}`), { method: "DELETE" });
+  const res = await apiFetch(withUserId(`${API}/api/bills/${id}`), { method: "DELETE" });
   const data = await res.json();
   if (data.success) {
     showToast("删除成功 ✅");
@@ -883,7 +915,7 @@ document.getElementById("confirmEdit").addEventListener("click", async () => {
     bill_type: document.getElementById("editType").value
   };
 
-  const res = await fetch(`${API}/api/bills/${id}`, {
+  const res = await apiFetch(`${API}/api/bills/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...payload, user_id: currentUserId })
@@ -937,7 +969,7 @@ document.getElementById("submitAdd").addEventListener("click", async () => {
   if (!amount || amount <= 0) { showToast("请输入有效金额 ⚠️"); return; }
   if (!description) { showToast("请输入描述 ⚠️"); return; }
 
-  const res = await fetch(`${API}/api/bills/add`, {
+  const res = await apiFetch(`${API}/api/bills/add`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ amount, category, description, bill_type: addBillType, date, user_id: currentUserId })
@@ -953,8 +985,8 @@ document.getElementById("submitAdd").addEventListener("click", async () => {
 // ========== 预算管理 ==========
 async function loadBudget() {
   const [budgetRes, summaryRes] = await Promise.all([
-    fetch(withUserId(`${API}/api/budget?year=${currentYear}&month=${currentMonth}`)),
-    fetch(withUserId(`${API}/api/summary?year=${currentYear}&month=${currentMonth}`))
+    apiFetch(withUserId(`${API}/api/budget?year=${currentYear}&month=${currentMonth}`)),
+    apiFetch(withUserId(`${API}/api/summary?year=${currentYear}&month=${currentMonth}`))
   ]);
   const budgetData = await budgetRes.json();
   const summaryData = await summaryRes.json();
@@ -988,7 +1020,7 @@ document.getElementById("saveBudget").addEventListener("click", async () => {
   const amount = parseFloat(document.getElementById("budgetInput").value);
   if (!amount || amount <= 0) { showToast("请输入有效预算金额 ⚠️"); return; }
 
-  const res = await fetch(withUserId(`${API}/api/budget?year=${currentYear}&month=${currentMonth}`), {
+  const res = await apiFetch(withUserId(`${API}/api/budget?year=${currentYear}&month=${currentMonth}`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ amount })
