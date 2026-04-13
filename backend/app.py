@@ -217,6 +217,113 @@ def parse_bill(text):
 
     return amount, category, description, bill_type
 
+
+def is_query_intent(text):
+    keywords = ["查询", "查", "看看", "统计", "汇总", "分析", "花了", "消费", "支出", "收入", "多少", "构成", "占比"]
+    return any(kw in text for kw in keywords)
+
+
+def extract_year_month_query(text, now):
+    match = re.search(r"(?:(\d{4})\s*年)?\s*(\d{1,2})\s*月", text)
+    if not match:
+        return None
+    year = int(match.group(1)) if match.group(1) else now.year
+    month = int(match.group(2))
+    if month < 1 or month > 12:
+        return None
+    start = datetime(year, month, 1)
+    if month == 12:
+        end = datetime(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end = datetime(year, month + 1, 1) - timedelta(days=1)
+    return start, end, f"{year}年{month}月"
+
+
+def parse_compact_date(date_str, fallback_year):
+    full = re.match(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})(?:日|号)?", date_str)
+    if full:
+        return datetime(int(full.group(1)), int(full.group(2)), int(full.group(3)))
+
+    md = re.match(r"(\d{1,2})[-/.月](\d{1,2})(?:日|号)?", date_str)
+    if md:
+        return datetime(fallback_year, int(md.group(1)), int(md.group(2)))
+    return None
+
+
+def extract_date_range_query(text, now):
+    range_match = re.search(
+        r"([\d年月日号./-]+)\s*(?:到|至|~|－|—|-)\s*([\d年月日号./-]+)",
+        text,
+    )
+    if not range_match:
+        return None
+    left = parse_compact_date(range_match.group(1).strip(), now.year)
+    right = parse_compact_date(range_match.group(2).strip(), now.year)
+    if not left or not right:
+        return None
+    if left > right:
+        left, right = right, left
+    label = f"{left.month}月{left.day}日~{right.month}月{right.day}日"
+    if left.year != now.year or right.year != now.year:
+        label = f"{left.year}-{left.month:02d}-{left.day:02d} ~ {right.year}-{right.month:02d}-{right.day:02d}"
+    return left, right, label
+
+
+def build_period_summary_reply(conn, user_id, start_date, end_date, label):
+    start_key = start_date.year * 10000 + start_date.month * 100 + start_date.day
+    end_key = end_date.year * 10000 + end_date.month * 100 + end_date.day
+
+    summary_row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+            SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income,
+            COUNT(*) AS cnt
+        FROM bills
+        WHERE user_id=? AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+        """,
+        (user_id, start_key, end_key),
+    ).fetchone()
+
+    cat_rows = conn.execute(
+        """
+        SELECT category, SUM(amount) AS total
+        FROM bills
+        WHERE user_id=?
+          AND bill_type='expense'
+          AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+        GROUP BY category
+        ORDER BY total DESC
+        """,
+        (user_id, start_key, end_key),
+    ).fetchall()
+
+    expense = summary_row["expense"] or 0
+    income = summary_row["income"] or 0
+    count = summary_row["cnt"] or 0
+
+    lines = [f"📊 {label} 统计"]
+    lines.append(f"💸 总支出：¥{expense:.2f}")
+    lines.append(f"💰 总收入：¥{income:.2f}")
+    lines.append(f"💎 结余：¥{income - expense:.2f}")
+    lines.append(f"📝 记录笔数：{count}笔")
+
+    if cat_rows:
+        lines.append("\n📌 支出构成：")
+        for row in cat_rows[:6]:
+            ratio = (row["total"] / expense * 100) if expense > 0 else 0
+            lines.append(f"  {row['category']}：¥{row['total']:.2f}（{ratio:.1f}%）")
+    else:
+        lines.append("\n📌 支出构成：暂无支出记录")
+    return "\n".join(lines)
+
+
+def build_visualization_link(user_id):
+    base_url = os.getenv("WEB_BASE_URL", "").strip()
+    if not base_url:
+        base_url = request.url_root.rstrip("/")
+    return f"{base_url}/?user_id={user_id}"
+
 # ==================== API 路由 ====================
 
 @app.route("/")
@@ -231,6 +338,59 @@ def chat():
     user_id = data.get("user_id") or DEFAULT_USER_ID
     if not message:
         return jsonify({"success": False, "reply": "请输入记账内容"})
+
+    # 支持误发快速撤销：删除当前用户最新一条账单
+    if message in {"撤销", "撤回", "撤销上一笔", "删除上一笔"}:
+        conn_undo = get_db()
+        latest = conn_undo.execute(
+            "SELECT id, category, amount, description, bill_type FROM bills WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if not latest:
+            conn_undo.close()
+            return jsonify({"success": False, "reply": "当前账本没有可撤销的记录。", "type": "undo"})
+        conn_undo.execute("DELETE FROM bills WHERE id=? AND user_id=?", (latest["id"], user_id))
+        conn_undo.commit()
+        conn_undo.close()
+
+        type_text = "收入" if latest["bill_type"] == "income" else "支出"
+        reply = f"🗑️ 已撤销上一笔{type_text}：{latest['category']} ¥{latest['amount']:.2f}（{latest['description']}）"
+        return jsonify({"success": True, "reply": reply, "type": "undo", "deleted_bill_id": latest["id"]})
+
+    if any(kw in message for kw in ["可视化", "图表", "趋势图", "仪表盘", "看图", "看报表", "看网页"]):
+        link = build_visualization_link(user_id)
+        return jsonify({
+            "success": True,
+            "reply": f"📈 可视化看板链接：\n{link}\n\n打开后可查看分类占比、趋势图、预算进度等。",
+            "type": "query",
+            "link": link,
+        })
+
+    now = datetime.now()
+    if any(kw in message for kw in ["上周", "上星期"]):
+        start_this_week = now - timedelta(days=now.weekday())
+        start_last_week = start_this_week - timedelta(days=7)
+        end_last_week = start_this_week - timedelta(days=1)
+        conn_q = get_db()
+        reply = build_period_summary_reply(conn_q, user_id, start_last_week, end_last_week, "上周")
+        conn_q.close()
+        return jsonify({"success": True, "reply": reply, "type": "query"})
+
+    date_range = extract_date_range_query(message, now)
+    if date_range and (is_query_intent(message) or "到" in message or "至" in message):
+        start_date, end_date, label = date_range
+        conn_q = get_db()
+        reply = build_period_summary_reply(conn_q, user_id, start_date, end_date, label)
+        conn_q.close()
+        return jsonify({"success": True, "reply": reply, "type": "query"})
+
+    ym_query = extract_year_month_query(message, now)
+    if ym_query and (is_query_intent(message) or "月" in message):
+        start_date, end_date, label = ym_query
+        conn_q = get_db()
+        reply = build_period_summary_reply(conn_q, user_id, start_date, end_date, label)
+        conn_q.close()
+        return jsonify({"success": True, "reply": reply, "type": "query"})
 
     result = parse_bill(message)
     if result is None:
@@ -318,10 +478,11 @@ def chat():
     now = datetime.now()
 
     conn = get_db()
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO bills (user_id, amount, category, description, bill_type, created_at, year, month, day) VALUES (?,?,?,?,?,?,?,?,?)",
         (user_id, amount, category, description, bill_type, now.isoformat(), now.year, now.month, now.day)
     )
+    bill_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
@@ -339,6 +500,7 @@ def chat():
         "reply": reply,
         "type": "add",
         "bill": {
+            "id": bill_id,
             "amount": amount,
             "category": category,
             "description": description,
@@ -424,6 +586,25 @@ def delete_bill(bill_id):
     conn.commit()
     conn.close()
     return jsonify({"success": True, "message": "删除成功"})
+
+
+@app.route("/api/bills/latest", methods=["DELETE"])
+def delete_latest_bill():
+    """删除当前用户最新一条账单。"""
+    user_id = get_request_user_id()
+    conn = get_db()
+    latest = conn.execute(
+        "SELECT id FROM bills WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    if not latest:
+        conn.close()
+        return jsonify({"success": False, "message": "暂无可删除账单"}), 404
+
+    conn.execute("DELETE FROM bills WHERE id=? AND user_id=?", (latest["id"], user_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True, "message": "已删除最新一条账单", "id": latest["id"]})
 
 @app.route("/api/bills/<int:bill_id>", methods=["PUT"])
 def update_bill(bill_id):

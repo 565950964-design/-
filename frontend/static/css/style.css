@@ -351,6 +351,47 @@ body {
   background: #fff;
 }
 
+.chat-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 24px 0;
+  background: #fff;
+}
+
+.quick-action-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.quick-action-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary-dark);
+}
+
+.quick-action-btn.danger:hover {
+  border-color: var(--expense);
+  color: #c92a2a;
+}
+
+.chat-inline-btn {
+  margin-top: 8px;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: rgba(255, 107, 107, 0.12);
+  color: #c92a2a;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .chat-input {
   flex: 1;
   border: 2px solid var(--border);
@@ -885,12 +926,49 @@ body {
     transform: translateY(-1px);
   }
 
+  .export-btn.neutral {
+    background: rgba(108, 99, 255, 0.1);
+    color: var(--primary-dark);
+  }
+
+  .export-btn.neutral:hover {
+    background: rgba(108, 99, 255, 0.18);
+  }
+
   #page-bills .page-header {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 12px;
+  }
+
+  .tutorial-card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 24px;
+    line-height: 1.8;
+  }
+
+  .tutorial-card h3 {
+    font-size: 18px;
+    margin-bottom: 8px;
+    margin-top: 16px;
+  }
+
+  .tutorial-card h3:first-child {
+    margin-top: 0;
+  }
+
+  .tutorial-card ol,
+  .tutorial-card ul {
+    margin-left: 20px;
+    color: var(--text-primary);
+  }
+
+  .tutorial-card li {
+    margin-bottom: 4px;
   }
   gap: 16px;
   margin-bottom: 20px;

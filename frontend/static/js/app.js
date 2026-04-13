@@ -205,6 +205,7 @@ function loadPageData(pageId) {
     case "bills": loadBills(); break;
     case "budget": loadBudget(); break;
     case "users": loadUsers(); break;
+    case "tutorial": break;
     case "chat": break;
     case "add": initAddForm(); break;
   }
@@ -228,11 +229,28 @@ function appendMessage(content, isUser = false) {
   messages.scrollTop = messages.scrollHeight;
 }
 
-async function sendChat() {
+function appendBotBillMessage(data) {
+  const billId = data?.bill?.id;
+  let content = data.reply || "记录失败，请重试";
+  if (data.success && data.type === "add" && billId) {
+    content += `\n<button class="chat-inline-btn" data-delete-bill-id="${billId}">撤销这笔</button>`;
+  }
+  appendMessage(content, false);
+
+  const messages = document.getElementById("chatMessages");
+  const latestBtn = messages.querySelector(".message:last-child .chat-inline-btn");
+  if (latestBtn) {
+    latestBtn.addEventListener("click", async () => {
+      await deleteChatBill(Number(latestBtn.dataset.deleteBillId));
+    });
+  }
+}
+
+async function sendChat(forceText = "") {
   const input = document.getElementById("chatInput");
-  const msg = input.value.trim();
+  const msg = (forceText || input.value || "").trim();
   if (!msg) return;
-  input.value = "";
+  if (!forceText) input.value = "";
   appendMessage(msg, true);
 
   try {
@@ -242,18 +260,35 @@ async function sendChat() {
       body: JSON.stringify({ message: msg, user_id: currentUserId })
     });
     const data = await res.json();
-    appendMessage(data.reply || "记录失败，请重试");
-    if (data.success && data.type === "add") {
-      // 如果在其他页面查看了，刷新数据
+    appendBotBillMessage(data);
+    if (data.success && ["add", "undo"].includes(data.type)) {
+      refreshCurrentPage();
     }
   } catch (e) {
     appendMessage("网络错误，请重试 😢");
   }
 }
 
+async function deleteChatBill(id) {
+  if (!id) return;
+  const res = await fetch(withUserId(`${API}/api/bills/${id}`), { method: "DELETE" });
+  const data = await res.json();
+  if (data.success) {
+    appendMessage("🗑️ 已撤销这笔误发记录", false);
+    showToast("已撤销 ✅");
+    refreshCurrentPage();
+  } else {
+    showToast("撤销失败 ⚠️");
+  }
+}
+
 document.getElementById("sendBtn").addEventListener("click", sendChat);
 document.getElementById("chatInput").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+
+document.querySelectorAll(".quick-action-btn").forEach(btn => {
+  btn.addEventListener("click", () => sendChat(btn.dataset.chatCmd || ""));
 });
 
 // ========== 账单总览 ==========
@@ -762,6 +797,15 @@ function renderBillItem(bill) {
 document.getElementById("filterType").addEventListener("change", loadBills);
 document.getElementById("billSearch")?.addEventListener("input", filterAndRenderBills);
 document.getElementById("filterCategory")?.addEventListener("change", filterAndRenderBills);
+document.getElementById("resetBillsFilterBtn")?.addEventListener("click", () => {
+  const search = document.getElementById("billSearch");
+  const type = document.getElementById("filterType");
+  const category = document.getElementById("filterCategory");
+  if (search) search.value = "";
+  if (type) type.value = "all";
+  if (category) category.value = "all";
+  loadBills();
+});
 document.getElementById("exportBillsBtn")?.addEventListener("click", () => {
   window.location.href = withUserId(`${API}/api/bills/export?year=${currentYear}&month=${currentMonth}`);
 });

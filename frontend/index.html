@@ -40,6 +40,10 @@
         <span class="nav-icon">👥</span>
         <span>用户管理</span>
       </li>
+      <li class="nav-item" data-page="tutorial">
+        <span class="nav-icon">📘</span>
+        <span>新手教程</span>
+      </li>
     </ul>
     <div class="sidebar-footer">
       <div class="month-selector">
@@ -82,9 +86,16 @@
                 <li>买衣服 ¥299</li>
                 <li>发工资收到 8000 元</li>
               </ul>
+              <p>误发可输入：撤销上一笔</p>
               <p>我来帮你记录！</p>
             </div>
           </div>
+        </div>
+        <div class="chat-quick-actions" id="chatQuickActions">
+          <button class="quick-action-btn" data-chat-cmd="今天">今天</button>
+          <button class="quick-action-btn" data-chat-cmd="本月">本月</button>
+          <button class="quick-action-btn" data-chat-cmd="查餐饮">查餐饮</button>
+          <button class="quick-action-btn danger" data-chat-cmd="撤销上一笔">撤销上一笔</button>
         </div>
         <div class="chat-input-area">
           <input type="text" id="chatInput" class="chat-input" placeholder="输入记账内容，如：吃饭15块..." />
@@ -191,6 +202,7 @@
             <option value="收入">💰 收入</option>
             <option value="其他">📝 其他</option>
           </select>
+          <button id="resetBillsFilterBtn" class="export-btn neutral">重置筛选</button>
           <button id="exportBillsBtn" class="export-btn">⬇️ 导出CSV</button>
         </div>
       </div>
@@ -347,6 +359,54 @@
         <div id="approvalLogsList" class="logs-list"></div>
       </div>
       </div><!-- end admin-content-area -->
+    </section>
+
+    <section id="page-tutorial" class="page">
+      <div class="page-header">
+        <h1>新手教程</h1>
+        <p>从 0 到 1 使用这份账本：网页、微信、审批、撤销、导出</p>
+      </div>
+      <div class="tutorial-card">
+        <h3>1. 快速开始（网页）</h3>
+        <ol>
+          <li>打开首页，默认账本是 web-local。</li>
+          <li>在“智能记账”输入一句话，比如“午饭 22 元”。</li>
+          <li>去“账单明细”核对记录，支持搜索、筛选、编辑、删除。</li>
+          <li>去“预算管理”设置本月预算，观察预算进度和日均支出。</li>
+        </ol>
+
+        <h3>2. 微信接入与审批</h3>
+        <ol>
+          <li>微信测试号 URL 填：你的域名/wechat，Token 填 WECHAT_TOKEN。</li>
+          <li>新用户先发“申请使用”。</li>
+          <li>管理员到“用户管理”输入 ADMIN_WEB_TOKEN 后审批。</li>
+          <li>审批通过后用户即可在微信自然语言记账。</li>
+        </ol>
+
+        <h3>3. 常用对话指令</h3>
+        <ul>
+          <li>记账：吃饭 18 元 / 工资 8000</li>
+          <li>查询：今天、昨天、本月、上月、查餐饮</li>
+          <li>区间：上周、3月、2026年3月、3月1日到3月15日消费</li>
+          <li>会返回该时间段总支出/总收入/结余和支出构成占比</li>
+          <li>纠错：撤销上一笔（误发时立刻撤回）</li>
+          <li>可视化：发送“可视化”/“看图表”，会返回网页看板链接</li>
+        </ul>
+
+        <h3>4. 数据管理</h3>
+        <ul>
+          <li>账单明细可导出 CSV（Excel 直接打开）。</li>
+          <li>不同 user_id 的账本相互隔离。</li>
+          <li>审批日志用于追踪批准/拒绝操作。</li>
+        </ul>
+
+        <h3>5. 常见问题</h3>
+        <ul>
+          <li>看不到用户管理数据：先输入管理员口令登录。</li>
+          <li>微信校验失败：检查 URL 可公网访问、Token 一致。</li>
+          <li>误记了一笔：在聊天里点“撤销这笔”或输入“撤销上一笔”。</li>
+        </ul>
+      </div>
     </section>
   </main>
 

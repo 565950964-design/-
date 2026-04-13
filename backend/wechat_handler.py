@@ -15,6 +15,111 @@ from wechatpy.exceptions import InvalidSignatureException
 # 从你的微信公众号后台获取的配置
 WECHAT_TOKEN = os.getenv("WECHAT_TOKEN", "your_wechat_token_here")
 WECHAT_ADMIN_OPENID = os.getenv("WECHAT_ADMIN_OPENID", "")
+WEB_BASE_URL = os.getenv("WEB_BASE_URL", "").strip()
+
+
+def is_query_intent(text):
+    keywords = ["查询", "查", "看看", "统计", "汇总", "分析", "花了", "消费", "支出", "收入", "多少", "构成", "占比"]
+    return any(kw in text for kw in keywords)
+
+
+def extract_year_month_query(text, now):
+    match = re.search(r"(?:(\d{4})\s*年)?\s*(\d{1,2})\s*月", text)
+    if not match:
+        return None
+    year = int(match.group(1)) if match.group(1) else now.year
+    month = int(match.group(2))
+    if month < 1 or month > 12:
+        return None
+
+    from datetime import datetime, timedelta
+    start = datetime(year, month, 1)
+    if month == 12:
+        end = datetime(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        end = datetime(year, month + 1, 1) - timedelta(days=1)
+    return start, end, f"{year}年{month}月"
+
+
+def parse_compact_date(date_str, fallback_year):
+    from datetime import datetime
+    full = re.match(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})(?:日|号)?", date_str)
+    if full:
+        return datetime(int(full.group(1)), int(full.group(2)), int(full.group(3)))
+
+    md = re.match(r"(\d{1,2})[-/.月](\d{1,2})(?:日|号)?", date_str)
+    if md:
+        return datetime(fallback_year, int(md.group(1)), int(md.group(2)))
+    return None
+
+
+def extract_date_range_query(text, now):
+    range_match = re.search(
+        r"([\d年月日号./-]+)\s*(?:到|至|~|－|—|-)\s*([\d年月日号./-]+)",
+        text,
+    )
+    if not range_match:
+        return None
+
+    left = parse_compact_date(range_match.group(1).strip(), now.year)
+    right = parse_compact_date(range_match.group(2).strip(), now.year)
+    if not left or not right:
+        return None
+    if left > right:
+        left, right = right, left
+
+    label = f"{left.month}月{left.day}日~{right.month}月{right.day}日"
+    if left.year != now.year or right.year != now.year:
+        label = f"{left.year}-{left.month:02d}-{left.day:02d} ~ {right.year}-{right.month:02d}-{right.day:02d}"
+    return left, right, label
+
+
+def build_period_summary_reply(conn, user_id, start_date, end_date, label):
+    start_key = start_date.year * 10000 + start_date.month * 100 + start_date.day
+    end_key = end_date.year * 10000 + end_date.month * 100 + end_date.day
+
+    summary_row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+            SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income,
+            COUNT(*) AS cnt
+        FROM bills
+        WHERE user_id=? AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+        """,
+        (user_id, start_key, end_key),
+    ).fetchone()
+
+    cat_rows = conn.execute(
+        """
+        SELECT category, SUM(amount) AS total
+        FROM bills
+        WHERE user_id=?
+          AND bill_type='expense'
+          AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+        GROUP BY category
+        ORDER BY total DESC
+        """,
+        (user_id, start_key, end_key),
+    ).fetchall()
+
+    expense = summary_row["expense"] or 0
+    income = summary_row["income"] or 0
+    count = summary_row["cnt"] or 0
+
+    lines = [f"📊 {label} 统计"]
+    lines.append(f"💸 总支出：¥{expense:.2f}")
+    lines.append(f"💰 总收入：¥{income:.2f}")
+    lines.append(f"💎 结余：¥{income - expense:.2f}")
+    lines.append(f"📝 记录笔数：{count}笔")
+    if cat_rows:
+        lines.append("\n📌 支出构成：")
+        for row in cat_rows[:6]:
+            ratio = (row["total"] / expense * 100) if expense > 0 else 0
+            lines.append(f"  {row['category']}：¥{row['total']:.2f}（{ratio:.1f}%）")
+    else:
+        lines.append("\n📌 支出构成：暂无支出记录")
+    return "\n".join(lines)
 
 def register_wechat_routes(app, init_db_func, parse_bill_func, get_db_func, get_month_summary_func, format_summary_reply_func):
     """注册微信路由到 Flask app"""
@@ -304,8 +409,35 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
         )
 
     # 查询指令
+    if any(kw in text for kw in ["可视化", "图表", "趋势图", "仪表盘", "看图", "看报表", "看网页"]):
+        link = f"{WEB_BASE_URL}/?user_id={user_id}" if WEB_BASE_URL else "（请联系管理员配置 WEB_BASE_URL 后可直接打开网页）"
+        conn.close()
+        return f"📈 可视化看板链接：\n{link}"
+
+    now = datetime.now()
+    if any(kw in text for kw in ["上周", "上星期"]):
+        start_this_week = now - timedelta(days=now.weekday())
+        start_last_week = start_this_week - timedelta(days=7)
+        end_last_week = start_this_week - timedelta(days=1)
+        reply = build_period_summary_reply(conn, user_id, start_last_week, end_last_week, "上周")
+        conn.close()
+        return reply
+
+    date_range = extract_date_range_query(text, now)
+    if date_range and (is_query_intent(text) or "到" in text or "至" in text):
+        start_date, end_date, label = date_range
+        reply = build_period_summary_reply(conn, user_id, start_date, end_date, label)
+        conn.close()
+        return reply
+
+    ym_query = extract_year_month_query(text, now)
+    if ym_query and (is_query_intent(text) or "月" in text):
+        start_date, end_date, label = ym_query
+        reply = build_period_summary_reply(conn, user_id, start_date, end_date, label)
+        conn.close()
+        return reply
+
     if any(kw in text for kw in ["本月", "这月", "账单", "统计", "花了多少", "查询"]):
-        now = datetime.now()
         summary = get_month_summary_func(now.year, now.month, user_id)
         conn.close()
         return format_summary_reply_func(summary, now.year, now.month)
