@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>记账小助手 💰</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js"></script>
+</head>
+<body>
+  <!-- 侧边栏 -->
+  <nav class="sidebar">
+    <div class="logo">
+      <span class="logo-icon">💰</span>
+      <span class="logo-text">记账小助手</span>
+    </div>
+    <ul class="nav-menu">
+      <li class="nav-item active" data-page="chat">
+        <span class="nav-icon">💬</span>
+        <span>智能记账</span>
+      </li>
+      <li class="nav-item" data-page="dashboard">
+        <span class="nav-icon">📊</span>
+        <span>账单总览</span>
+      </li>
+      <li class="nav-item" data-page="bills">
+        <span class="nav-icon">📋</span>
+        <span>账单明细</span>
+      </li>
+      <li class="nav-item" data-page="add">
+        <span class="nav-icon">➕</span>
+        <span>手动添加</span>
+      </li>
+      <li class="nav-item" data-page="budget">
+        <span class="nav-icon">🎯</span>
+        <span>预算管理</span>
+      </li>
+      <li class="nav-item" data-page="users">
+        <span class="nav-icon">👥</span>
+        <span>用户管理</span>
+      </li>
+    </ul>
+    <div class="sidebar-footer">
+      <div class="month-selector">
+        <button id="prevMonth" class="month-btn">‹</button>
+        <span id="currentMonth">2024年1月</span>
+        <button id="nextMonth" class="month-btn">›</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 主内容区 -->
+  <main class="main-content">
+    <section class="user-switcher-card">
+      <div class="user-switcher-copy">
+        <h2>当前账本</h2>
+        <p id="currentUserLabel">web-local</p>
+      </div>
+      <div class="user-switcher-form">
+        <input type="text" id="userIdInput" class="form-input user-switcher-input" placeholder="输入微信 user_id 或 openid" />
+        <button id="switchUserBtn" class="user-switcher-btn">切换账本</button>
+      </div>
+    </section>
+
+    <!-- 聊天记账页 -->
+    <section id="page-chat" class="page active">
+      <div class="page-header">
+        <h1>智能记账 <span class="badge">AI</span></h1>
+        <p>直接输入消费内容，自动识别分类</p>
+      </div>
+      <div class="chat-container">
+        <div class="chat-messages" id="chatMessages">
+          <div class="message bot-message">
+            <div class="message-avatar">🤖</div>
+            <div class="message-bubble">
+              <p>你好！我是你的记账小助手 😊</p>
+              <p>直接告诉我你花了什么钱，比如：</p>
+              <ul>
+                <li>吃饭花了 15 块</li>
+                <li>打车 18 元</li>
+                <li>买衣服 ¥299</li>
+                <li>发工资收到 8000 元</li>
+              </ul>
+              <p>我来帮你记录！</p>
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <input type="text" id="chatInput" class="chat-input" placeholder="输入记账内容，如：吃饭15块..." />
+          <button id="sendBtn" class="send-btn">发送</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 账单总览页 -->
+    <section id="page-dashboard" class="page">
+      <div class="page-header">
+        <h1>账单总览</h1>
+        <p id="dashboardMonthLabel">本月支出概览</p>
+      </div>
+
+      <!-- 统计卡片 -->
+      <div class="stats-grid">
+        <div class="stat-card expense">
+          <div class="stat-icon">💸</div>
+          <div class="stat-info">
+            <div class="stat-value" id="totalExpense">¥0.00</div>
+            <div class="stat-label">本月支出</div>
+          </div>
+        </div>
+        <div class="stat-card income">
+          <div class="stat-icon">💰</div>
+          <div class="stat-info">
+            <div class="stat-value" id="totalIncome">¥0.00</div>
+            <div class="stat-label">本月收入</div>
+          </div>
+        </div>
+        <div class="stat-card balance">
+          <div class="stat-icon">💎</div>
+          <div class="stat-info">
+            <div class="stat-value" id="totalBalance">¥0.00</div>
+            <div class="stat-label">本月结余</div>
+          </div>
+        </div>
+        <div class="stat-card count">
+          <div class="stat-icon">📝</div>
+          <div class="stat-info">
+            <div class="stat-value" id="totalCount">0</div>
+            <div class="stat-label">记录笔数</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 预算进度 -->
+      <div class="budget-progress-card" id="budgetProgressCard">
+        <div class="budget-label">
+          <span>本月预算进度</span>
+          <span id="budgetProgressText">未设置预算</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill" id="budgetProgressFill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <!-- 图表区 -->
+      <div class="charts-grid">
+        <div class="chart-card">
+          <h3>支出分类占比</h3>
+          <div class="chart-wrapper">
+            <canvas id="categoryChart"></canvas>
+          </div>
+        </div>
+        <div class="chart-card">
+          <h3>收支趋势（近6个月）</h3>
+          <div class="chart-wrapper">
+            <canvas id="trendChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 账单明细页 -->
+    <section id="page-bills" class="page">
+      <div class="page-header">
+        <h1>账单明细</h1>
+        <div class="header-actions">
+          <select id="filterType" class="filter-select">
+            <option value="all">全部</option>
+            <option value="expense">支出</option>
+            <option value="income">收入</option>
+          </select>
+        </div>
+      </div>
+      <div class="bills-list" id="billsList">
+        <div class="empty-state">
+          <div class="empty-icon">📭</div>
+          <p>暂无账单记录</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 手动添加页 -->
+    <section id="page-add" class="page">
+      <div class="page-header">
+        <h1>手动添加账单</h1>
+      </div>
+      <div class="form-card">
+        <div class="form-tabs">
+          <button class="form-tab active" data-type="expense">支出</button>
+          <button class="form-tab" data-type="income">收入</button>
+        </div>
+        <div class="form-body">
+          <div class="form-group">
+            <label>金额 (元)</label>
+            <input type="number" id="addAmount" class="form-input" placeholder="请输入金额" min="0" step="0.01" />
+          </div>
+          <div class="form-group">
+            <label>分类</label>
+            <select id="addCategory" class="form-input">
+              <option value="餐饮">🍜 餐饮</option>
+              <option value="交通">🚕 交通</option>
+              <option value="购物">🛍️ 购物</option>
+              <option value="娱乐">🎮 娱乐</option>
+              <option value="居家">🏠 居家</option>
+              <option value="医疗">💊 医疗</option>
+              <option value="教育">📚 教育</option>
+              <option value="人情">🧧 人情</option>
+              <option value="其他">📝 其他</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>描述</label>
+            <input type="text" id="addDescription" class="form-input" placeholder="消费描述" />
+          </div>
+          <div class="form-group">
+            <label>日期</label>
+            <input type="date" id="addDate" class="form-input" />
+          </div>
+          <button id="submitAdd" class="submit-btn">记录账单</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 预算管理页 -->
+    <section id="page-budget" class="page">
+      <div class="page-header">
+        <h1>预算管理</h1>
+      </div>
+      <div class="form-card">
+        <div class="form-body">
+          <div class="budget-display">
+            <div class="budget-circle">
+              <svg viewBox="0 0 120 120" class="budget-svg">
+                <circle cx="60" cy="60" r="54" class="budget-bg-circle" />
+                <circle cx="60" cy="60" r="54" class="budget-progress-circle" id="budgetCircle" />
+              </svg>
+              <div class="budget-center-text">
+                <div class="budget-percent" id="budgetPercent">0%</div>
+                <div class="budget-sub">已使用</div>
+              </div>
+            </div>
+            <div class="budget-details">
+              <div class="budget-detail-item">
+                <span class="budget-detail-label">月预算</span>
+                <span class="budget-detail-value" id="budgetAmount">¥0</span>
+              </div>
+              <div class="budget-detail-item">
+                <span class="budget-detail-label">已支出</span>
+                <span class="budget-detail-value red" id="budgetSpent">¥0</span>
+              </div>
+              <div class="budget-detail-item">
+                <span class="budget-detail-label">剩余</span>
+                <span class="budget-detail-value green" id="budgetRemain">¥0</span>
+              </div>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>设置本月预算（元）</label>
+            <input type="number" id="budgetInput" class="form-input" placeholder="输入预算金额" min="0" />
+          </div>
+          <button id="saveBudget" class="submit-btn">保存预算</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="page-users" class="page">
+      <div class="page-header">
+        <h1>用户管理</h1>
+        <p>审批申请用户、设置备注名，并一键切换到账本查看</p>
+      </div>
+
+      <div class="admin-auth-card">
+        <div class="admin-auth-copy">
+          <h3>管理员登录</h3>
+          <p>为保护审批后台，请输入管理员口令（来自环境变量 ADMIN_WEB_TOKEN）</p>
+        </div>
+        <div class="admin-auth-form">
+          <input type="password" id="adminTokenInput" class="form-input admin-token-input" placeholder="输入管理员口令" />
+          <button id="saveAdminTokenBtn" class="admin-auth-btn">登录</button>
+          <button id="clearAdminTokenBtn" class="admin-clear-btn">退出</button>
+        </div>
+      </div>
+
+      <div class="user-summary-grid">
+        <div class="summary-chip pending">
+          <span class="summary-chip-label">待审批</span>
+          <span class="summary-chip-value" id="pendingCount">0</span>
+        </div>
+        <div class="summary-chip approved">
+          <span class="summary-chip-label">已批准</span>
+          <span class="summary-chip-value" id="approvedCount">0</span>
+        </div>
+        <div class="summary-chip admin">
+          <span class="summary-chip-label">管理员</span>
+          <span class="summary-chip-value" id="adminCount">0</span>
+        </div>
+        <div class="summary-chip rejected">
+          <span class="summary-chip-label">已拒绝</span>
+          <span class="summary-chip-value" id="rejectedCount">0</span>
+        </div>
+      </div>
+
+      <div class="user-manage-grid">
+        <div class="user-panel">
+          <div class="user-panel-header">
+            <h3>待审批申请</h3>
+            <button id="refreshUsersBtn" class="panel-action-btn">刷新</button>
+          </div>
+          <div id="pendingUsersList" class="user-card-list"></div>
+        </div>
+        <div class="user-panel">
+          <div class="user-panel-header">
+            <h3>已批准用户</h3>
+          </div>
+          <div id="approvedUsersList" class="user-card-list"></div>
+        </div>
+      </div>
+
+      <div class="user-panel logs-panel">
+        <div class="user-panel-header">
+          <h3>审批日志</h3>
+        </div>
+        <div id="approvalLogsList" class="logs-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 编辑弹窗 -->
+  <div class="modal-overlay" id="editModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>编辑账单</h3>
+        <button class="modal-close" id="closeModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editId" />
+        <div class="form-group">
+          <label>金额</label>
+          <input type="number" id="editAmount" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label>分类</label>
+          <select id="editCategory" class="form-input">
+            <option value="餐饮">🍜 餐饮</option>
+            <option value="交通">🚕 交通</option>
+            <option value="购物">🛍️ 购物</option>
+            <option value="娱乐">🎮 娱乐</option>
+            <option value="居家">🏠 居家</option>
+            <option value="医疗">💊 医疗</option>
+            <option value="教育">📚 教育</option>
+            <option value="人情">🧧 人情</option>
+            <option value="收入">💰 收入</option>
+            <option value="其他">📝 其他</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>描述</label>
+          <input type="text" id="editDescription" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label>类型</label>
+          <select id="editType" class="form-input">
+            <option value="expense">支出</option>
+            <option value="income">收入</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="cancelModal">取消</button>
+        <button class="btn-confirm" id="confirmEdit">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast 提示 -->
+  <div class="toast" id="toast"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
