@@ -67,6 +67,12 @@ async function adminFetch(path, options = {}) {
 }
 
 
+function setAdminContentVisible(visible) {
+  const area = document.getElementById("admin-content-area");
+  if (area) area.style.display = visible ? "" : "none";
+}
+
+
 function initAdminAuth() {
   const tokenInput = document.getElementById("adminTokenInput");
   const saveBtn = document.getElementById("saveAdminTokenBtn");
@@ -81,7 +87,10 @@ function initAdminAuth() {
     const ok = await verifyAdminToken();
     if (ok) {
       showToast("管理员登录成功 ✅");
+      setAdminContentVisible(true);
       loadUsers();
+    } else {
+      setAdminContentVisible(false);
     }
   });
 
@@ -90,13 +99,7 @@ function initAdminAuth() {
     localStorage.removeItem(ADMIN_TOKEN_KEY);
     tokenInput.value = "";
     showToast("已退出管理员登录");
-    renderUsersList("pendingUsersList", [], true);
-    renderUsersList("approvedUsersList", [], false);
-    renderApprovalLogs([]);
-    document.getElementById("pendingCount").textContent = "0";
-    document.getElementById("approvedCount").textContent = "0";
-    document.getElementById("adminCount").textContent = "0";
-    document.getElementById("rejectedCount").textContent = "0";
+    setAdminContentVisible(false);
   });
 
   tokenInput.addEventListener("keydown", event => {
@@ -276,6 +279,14 @@ async function loadDashboard() {
   currentBudget = budgetData.budget || 0;
   updateBudgetProgress();
 
+  const todayD = new Date();
+  const daysElapsed =
+    currentYear === todayD.getFullYear() && currentMonth === todayD.getMonth() + 1
+      ? todayD.getDate()
+      : new Date(currentYear, currentMonth, 0).getDate();
+  const avgEl = document.getElementById("dailyAvg");
+  if (avgEl) avgEl.textContent = formatAmount(daysElapsed > 0 ? s.expense / daysElapsed : 0);
+
   renderCategoryChart(s.categories);
   renderTrendChart(trendData.trend);
 }
@@ -421,13 +432,12 @@ function formatDateTime(dateStr) {
 async function loadUsers() {
   const authed = await verifyAdminToken(true);
   if (!authed) {
-    renderUsersList("pendingUsersList", [], true);
-    renderUsersList("approvedUsersList", [], false);
-    renderApprovalLogs([]);
-    showToast("请先输入管理员口令后再查看用户管理");
+    setAdminContentVisible(false);
+    if (adminToken) showToast("管理员口令失效，请重新登录 ⚠️");
     return;
   }
 
+  setAdminContentVisible(true);
   const res = await adminFetch(`${API}/api/wechat-users`);
   const data = await res.json();
   if (!data.success) {
@@ -649,7 +659,23 @@ async function loadBills() {
   const res = await fetch(withUserId(`${API}/api/bills?year=${currentYear}&month=${currentMonth}&type=${filterType}`));
   const data = await res.json();
   billsData = data.bills || [];
-  renderBillsList(billsData);
+  filterAndRenderBills();
+}
+
+function filterAndRenderBills() {
+  const search = (document.getElementById("billSearch")?.value || "").trim().toLowerCase();
+  const category = document.getElementById("filterCategory")?.value || "all";
+  let filtered = billsData;
+  if (search) {
+    filtered = filtered.filter(b =>
+      (b.description || "").toLowerCase().includes(search) ||
+      (b.category || "").toLowerCase().includes(search)
+    );
+  }
+  if (category !== "all") {
+    filtered = filtered.filter(b => b.category === category);
+  }
+  renderBillsList(filtered);
 }
 
 function renderBillsList(bills) {
@@ -734,6 +760,11 @@ function renderBillItem(bill) {
 }
 
 document.getElementById("filterType").addEventListener("change", loadBills);
+document.getElementById("billSearch")?.addEventListener("input", filterAndRenderBills);
+document.getElementById("filterCategory")?.addEventListener("change", filterAndRenderBills);
+document.getElementById("exportBillsBtn")?.addEventListener("click", () => {
+  window.location.href = withUserId(`${API}/api/bills/export?year=${currentYear}&month=${currentMonth}`);
+});
 
 // ========== 删除账单 ==========
 async function deleteBill(id) {

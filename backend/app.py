@@ -5,7 +5,9 @@
 
 import re
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
+import csv
+import io
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import sqlite3
@@ -232,13 +234,85 @@ def chat():
 
     result = parse_bill(message)
     if result is None:
-        # 尝试回复查询类消息
+        # === 今天 ===
+        if any(kw in message for kw in ["今天", "今日", "今天花了"]):
+            now = datetime.now()
+            conn_q = get_db()
+            rows = conn_q.execute(
+                "SELECT * FROM bills WHERE user_id=? AND year=? AND month=? AND day=? ORDER BY created_at DESC",
+                (user_id, now.year, now.month, now.day),
+            ).fetchall()
+            conn_q.close()
+            if not rows:
+                reply = "今天还没有记账哦 😊 快来记一笔！"
+            else:
+                total_exp = sum(r["amount"] for r in rows if r["bill_type"] == "expense")
+                total_inc = sum(r["amount"] for r in rows if r["bill_type"] == "income")
+                lines = [f"📅 今天（{now.month}/{now.day}）共 {len(rows)} 笔："]
+                for r in rows:
+                    prefix = "+" if r["bill_type"] == "income" else "-"
+                    lines.append(f"  {r['category']} {prefix}¥{r['amount']:.2f} {r['description']}")
+                lines.append(f"💸 今日支出：¥{total_exp:.2f}")
+                if total_inc > 0:
+                    lines.append(f"💰 今日收入：¥{total_inc:.2f}")
+                reply = "\n".join(lines)
+            return jsonify({"success": True, "reply": reply, "type": "query"})
+
+        # === 昨天 ===
+        if any(kw in message for kw in ["昨天", "昨日"]):
+            now = datetime.now()
+            yesterday = now - timedelta(days=1)
+            conn_q = get_db()
+            rows = conn_q.execute(
+                "SELECT * FROM bills WHERE user_id=? AND year=? AND month=? AND day=? ORDER BY created_at DESC",
+                (user_id, yesterday.year, yesterday.month, yesterday.day),
+            ).fetchall()
+            conn_q.close()
+            if not rows:
+                reply = "昨天没有找到记账记录。"
+            else:
+                total_exp = sum(r["amount"] for r in rows if r["bill_type"] == "expense")
+                lines = [f"📅 昨天（{yesterday.month}/{yesterday.day}）共 {len(rows)} 笔："]
+                for r in rows:
+                    prefix = "+" if r["bill_type"] == "income" else "-"
+                    lines.append(f"  {r['category']} {prefix}¥{r['amount']:.2f} {r['description']}")
+                lines.append(f"💸 昨日支出：¥{total_exp:.2f}")
+                reply = "\n".join(lines)
+            return jsonify({"success": True, "reply": reply, "type": "query"})
+
+        # === 上月 ===
+        if any(kw in message for kw in ["上月", "上个月"]):
+            now = datetime.now()
+            last = now.replace(day=1) - timedelta(days=1)
+            summary = get_month_summary(last.year, last.month, user_id)
+            reply = format_summary_reply(summary, last.year, last.month)
+            return jsonify({"success": True, "reply": reply, "type": "query"})
+
+        # === 分类查询（如"查餐饮"/"餐饮花了多少"） ===
+        cat_names = [c for c in CATEGORY_KEYWORDS if c != "其他"]
+        matched_cat = next((c for c in cat_names if c in message), None)
+        if matched_cat and (any(kw in message for kw in ["查", "多少", "花了", "花费", "支出"]) or len(message) <= 4):
+            now = datetime.now()
+            conn_q = get_db()
+            row = conn_q.execute(
+                "SELECT SUM(amount) as total, COUNT(*) as cnt FROM bills "
+                "WHERE user_id=? AND year=? AND month=? AND category=? AND bill_type='expense'",
+                (user_id, now.year, now.month, matched_cat),
+            ).fetchone()
+            conn_q.close()
+            total = row["total"] or 0
+            cnt = row["cnt"] or 0
+            reply = f"📊 本月{matched_cat}支出：¥{total:.2f}（共 {cnt} 笔）"
+            return jsonify({"success": True, "reply": reply, "type": "query"})
+
+        # === 本月汇总 ===
         if any(kw in message for kw in ["本月", "这月", "今月", "账单", "统计", "总共", "花了多少"]):
             now = datetime.now()
             summary = get_month_summary(now.year, now.month, user_id)
             reply = format_summary_reply(summary, now.year, now.month)
             return jsonify({"success": True, "reply": reply, "type": "query"})
-        return jsonify({"success": False, "reply": "没有识别到金额，请重新输入，例如：吃饭10块、打车20元"})
+
+        return jsonify({"success": False, "reply": "没有识别到金额，请重新输入，例如：吃饭10块、打车20元\n\n也可以查询：今天 / 昨天 / 本月 / 上月 / 查餐饮"})
 
     amount, category, description, bill_type = result
     now = datetime.now()
@@ -564,6 +638,38 @@ def get_approval_logs():
     ).fetchall()
     conn.close()
     return jsonify({"success": True, "logs": [dict(row) for row in rows]})
+
+
+@app.route("/api/bills/export", methods=["GET"])
+def export_bills():
+    """导出当月账单为 CSV（BOM 格式，Excel 直接打开不乱码）"""
+    year = request.args.get("year", datetime.now().year, type=int)
+    month = request.args.get("month", datetime.now().month, type=int)
+    user_id = get_request_user_id()
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT amount, category, description, bill_type, year, month, day "
+        "FROM bills WHERE user_id=? AND year=? AND month=? ORDER BY year, month, day, id",
+        (user_id, year, month),
+    ).fetchall()
+    conn.close()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["日期", "金额", "类型", "分类", "描述"])
+    for row in rows:
+        bill_type = "收入" if row["bill_type"] == "income" else "支出"
+        date_str = f"{row['year']}-{row['month']:02d}-{row['day']:02d}"
+        writer.writerow([date_str, row["amount"], bill_type, row["category"], row["description"]])
+
+    from flask import Response
+    return Response(
+        "\ufeff" + output.getvalue(),
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename=bills_{year}_{month:02d}.csv"},
+    )
+
 
 # ==================== 辅助函数 ====================
 

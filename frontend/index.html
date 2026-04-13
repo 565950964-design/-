@@ -130,6 +130,13 @@
             <div class="stat-label">记录笔数</div>
           </div>
         </div>
+        <div class="stat-card daily">
+          <div class="stat-icon">📅</div>
+          <div class="stat-info">
+            <div class="stat-value" id="dailyAvg">¥0.00</div>
+            <div class="stat-label">日均支出</div>
+          </div>
+        </div>
       </div>
 
       <!-- 预算进度 -->
@@ -165,11 +172,26 @@
       <div class="page-header">
         <h1>账单明细</h1>
         <div class="header-actions">
+          <input type="text" id="billSearch" class="bills-search-input" placeholder="搜索账单..." />
           <select id="filterType" class="filter-select">
             <option value="all">全部</option>
             <option value="expense">支出</option>
             <option value="income">收入</option>
           </select>
+          <select id="filterCategory" class="filter-select">
+            <option value="all">所有分类</option>
+            <option value="餐饮">🍜 餐饮</option>
+            <option value="交通">🚕 交通</option>
+            <option value="购物">🛍️ 购物</option>
+            <option value="娱乐">🎮 娱乐</option>
+            <option value="居家">🏠 居家</option>
+            <option value="医疗">💊 医疗</option>
+            <option value="教育">📚 教育</option>
+            <option value="人情">🧧 人情</option>
+            <option value="收入">💰 收入</option>
+            <option value="其他">📝 其他</option>
+          </select>
+          <button id="exportBillsBtn" class="export-btn">⬇️ 导出CSV</button>
         </div>
       </div>
       <div class="bills-list" id="billsList">
@@ -282,6 +304,7 @@
         </div>
       </div>
 
+      <div id="admin-content-area" style="display:none">
       <div class="user-summary-grid">
         <div class="summary-chip pending">
           <span class="summary-chip-label">待审批</span>
@@ -323,6 +346,7 @@
         </div>
         <div id="approvalLogsList" class="logs-list"></div>
       </div>
+      </div><!-- end admin-content-area -->
     </section>
   </main>
 
