@@ -7,6 +7,7 @@
 
 import os
 import re
+from datetime import datetime, timedelta
 from flask import request, make_response
 from wechatpy import parse_message, create_reply
 from wechatpy.utils import check_signature
@@ -119,6 +120,80 @@ def build_period_summary_reply(conn, user_id, start_date, end_date, label):
             lines.append(f"  {row['category']}：¥{row['total']:.2f}（{ratio:.1f}%）")
     else:
         lines.append("\n📌 支出构成：暂无支出记录")
+    return "\n".join(lines)
+
+
+def build_keyword_summary_reply(conn, user_id, keyword, start_date, end_date, label):
+    start_key = start_date.year * 10000 + start_date.month * 100 + start_date.day
+    end_key = end_date.year * 10000 + end_date.month * 100 + end_date.day
+    keyword_like = f"%{keyword}%"
+    row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+            SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income,
+            COUNT(*) AS cnt
+        FROM bills
+        WHERE user_id=?
+          AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+          AND (description LIKE ? OR category LIKE ?)
+        """,
+        (user_id, start_key, end_key, keyword_like, keyword_like),
+    ).fetchone()
+
+    expense = row["expense"] or 0
+    income = row["income"] or 0
+    cnt = row["cnt"] or 0
+    lines = [f"🔎 关键词“{keyword}”在{label}的统计"]
+    lines.append(f"📝 命中笔数：{cnt}笔")
+    lines.append(f"💸 支出：¥{expense:.2f}")
+    lines.append(f"💰 收入：¥{income:.2f}")
+    lines.append(f"💎 净额：¥{income - expense:.2f}")
+    return "\n".join(lines)
+
+
+def build_week_trend_reply(conn, user_id, start_date, end_date, label):
+    start_key = start_date.year * 10000 + start_date.month * 100 + start_date.day
+    end_key = end_date.year * 10000 + end_date.month * 100 + end_date.day
+    rows = conn.execute(
+        """
+        SELECT year, month, day,
+               SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+               SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income
+        FROM bills
+        WHERE user_id=?
+          AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+        GROUP BY year, month, day
+        ORDER BY year, month, day
+        """,
+        (user_id, start_key, end_key),
+    ).fetchall()
+
+    daily_map = {(r["year"], r["month"], r["day"]): r for r in rows}
+    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    lines = [f"📈 {label} 每日趋势"]
+    total_expense = 0
+    total_income = 0
+    best_day = (None, -1.0)
+
+    cur = start_date
+    while cur <= end_date:
+        rec = daily_map.get((cur.year, cur.month, cur.day))
+        exp = (rec["expense"] if rec else 0) or 0
+        inc = (rec["income"] if rec else 0) or 0
+        total_expense += exp
+        total_income += inc
+        if exp > best_day[1]:
+            best_day = (cur, exp)
+
+        wk = weekday_names[cur.weekday()]
+        lines.append(f"{wk} {cur.month}/{cur.day}：支出¥{exp:.2f}，收入¥{inc:.2f}")
+        cur += timedelta(days=1)
+
+    lines.append(f"\n💸 合计支出：¥{total_expense:.2f}")
+    lines.append(f"💰 合计收入：¥{total_income:.2f}")
+    if best_day[0] is not None and best_day[1] > 0:
+        lines.append(f"🔥 支出最高：{best_day[0].month}/{best_day[0].day}（¥{best_day[1]:.2f}）")
     return "\n".join(lines)
 
 def register_wechat_routes(app, init_db_func, parse_bill_func, get_db_func, get_month_summary_func, format_summary_reply_func):
@@ -335,8 +410,6 @@ def parse_application_payload(text):
 
 def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summary_func, format_summary_reply_func):
     """处理微信消息"""
-    from datetime import datetime
-
     conn = get_db_func()
     ensure_admin_record(conn, WECHAT_ADMIN_OPENID)
     bootstrapped = False
@@ -408,6 +481,71 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
             "发送“我的ID”可查看自己的 user_id。"
         )
 
+    if text in {"撤销", "撤回", "撤销上一笔", "删除上一笔"}:
+        latest = conn.execute(
+            "SELECT id, amount, category, description, bill_type, created_at, year, month, day FROM bills WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        if not latest:
+            conn.close()
+            return "当前账本没有可撤销的记录。"
+
+        conn.execute(
+            """
+            INSERT INTO undo_actions (user_id, amount, category, description, bill_type, source_created_at, year, month, day)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                latest["amount"],
+                latest["category"],
+                latest["description"],
+                latest["bill_type"],
+                latest["created_at"],
+                latest["year"],
+                latest["month"],
+                latest["day"],
+            ),
+        )
+        conn.execute("DELETE FROM bills WHERE id=? AND user_id=?", (latest["id"], user_id))
+        conn.commit()
+        conn.close()
+        return f"🗑️ 已撤销上一笔：{latest['category']} ¥{latest['amount']:.2f}（{latest['description']}）\n可发送“恢复上一笔”找回。"
+
+    if text in {"恢复", "恢复上一笔", "恢复删除", "找回上一笔"}:
+        latest_undo = conn.execute(
+            """
+            SELECT id, amount, category, description, bill_type, source_created_at, year, month, day
+            FROM undo_actions
+            WHERE user_id=?
+            ORDER BY deleted_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if not latest_undo:
+            conn.close()
+            return "没有可恢复的记录。"
+
+        conn.execute(
+            "INSERT INTO bills (user_id, amount, category, description, bill_type, created_at, year, month, day) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                user_id,
+                latest_undo["amount"],
+                latest_undo["category"],
+                latest_undo["description"],
+                latest_undo["bill_type"],
+                latest_undo["source_created_at"],
+                latest_undo["year"],
+                latest_undo["month"],
+                latest_undo["day"],
+            ),
+        )
+        conn.execute("DELETE FROM undo_actions WHERE id=?", (latest_undo["id"],))
+        conn.commit()
+        conn.close()
+        return f"♻️ 已恢复上一笔：{latest_undo['category']} ¥{latest_undo['amount']:.2f}（{latest_undo['description']}）"
+
     # 查询指令
     if any(kw in text for kw in ["可视化", "图表", "趋势图", "仪表盘", "看图", "看报表", "看网页"]):
         link = f"{WEB_BASE_URL}/?user_id={user_id}" if WEB_BASE_URL else "（请联系管理员配置 WEB_BASE_URL 后可直接打开网页）"
@@ -420,6 +558,13 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
         start_last_week = start_this_week - timedelta(days=7)
         end_last_week = start_this_week - timedelta(days=1)
         reply = build_period_summary_reply(conn, user_id, start_last_week, end_last_week, "上周")
+        conn.close()
+        return reply
+
+    if any(kw in text for kw in ["本周趋势", "本周每天", "本周走势", "本周消费趋势"]):
+        start_this_week = now - timedelta(days=now.weekday())
+        end_this_week = now
+        reply = build_week_trend_reply(conn, user_id, start_this_week, end_this_week, "本周")
         conn.close()
         return reply
 
@@ -436,6 +581,18 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
         reply = build_period_summary_reply(conn, user_id, start_date, end_date, label)
         conn.close()
         return reply
+
+    keyword_match = re.search(r"(?:查|搜索|统计|看看)\s*([\w\u4e00-\u9fff]{1,20})", text)
+    if keyword_match and ("关键词" in text or not any(k in text for k in ["本月", "上月", "上周", "今天", "昨天"])):
+        keyword = keyword_match.group(1).strip()
+        if keyword and keyword not in {"账单", "消费", "支出", "收入", "趋势", "图表"}:
+            start_date, end_date, label = (datetime(now.year, now.month, 1), now, "本月")
+            ym = extract_year_month_query(text, now)
+            if ym:
+                start_date, end_date, label = ym
+            reply = build_keyword_summary_reply(conn, user_id, keyword, start_date, end_date, label)
+            conn.close()
+            return reply
 
     if any(kw in text for kw in ["本月", "这月", "账单", "统计", "花了多少", "查询"]):
         summary = get_month_summary_func(now.year, now.month, user_id)
@@ -454,6 +611,10 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
             "      买衣服299元\n"
             "      收到工资8000\n\n"
             "查询：发送「本月账单」\n"
+            "扩展查询：发送「3月消费」「上周消费」「3月1日到3月15日消费」\n"
+            "关键词：发送「查滴滴」「统计星巴克」\n"
+            "趋势：发送「本周趋势」\n"
+            "纠错：发送「撤销上一笔」「恢复上一笔」\n"
             "申请：发送「申请使用 昵称:xx 尾号:1234 理由:xxx」\n"
             "查看ID：发送「我的ID」"
         )

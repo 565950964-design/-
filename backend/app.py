@@ -145,6 +145,21 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS undo_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            amount REAL NOT NULL,
+            category TEXT NOT NULL,
+            description TEXT NOT NULL,
+            bill_type TEXT NOT NULL,
+            source_created_at TEXT NOT NULL,
+            year INTEGER NOT NULL,
+            month INTEGER NOT NULL,
+            day INTEGER NOT NULL,
+            deleted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     ensure_column(conn, "bills", "user_id", "TEXT NOT NULL DEFAULT 'web-local'")
     ensure_column(conn, "wechat_users", "display_name", "TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "wechat_users", "apply_nickname", "TEXT NOT NULL DEFAULT ''")
@@ -318,6 +333,81 @@ def build_period_summary_reply(conn, user_id, start_date, end_date, label):
     return "\n".join(lines)
 
 
+def build_keyword_summary_reply(conn, user_id, keyword, start_date, end_date, label):
+    start_key = start_date.year * 10000 + start_date.month * 100 + start_date.day
+    end_key = end_date.year * 10000 + end_date.month * 100 + end_date.day
+    keyword_like = f"%{keyword}%"
+
+    row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+            SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income,
+            COUNT(*) AS cnt
+        FROM bills
+        WHERE user_id=?
+          AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+          AND (description LIKE ? OR category LIKE ?)
+        """,
+        (user_id, start_key, end_key, keyword_like, keyword_like),
+    ).fetchone()
+
+    expense = row["expense"] or 0
+    income = row["income"] or 0
+    cnt = row["cnt"] or 0
+    lines = [f"🔎 关键词“{keyword}”在{label}的统计"]
+    lines.append(f"📝 命中笔数：{cnt}笔")
+    lines.append(f"💸 支出：¥{expense:.2f}")
+    lines.append(f"💰 收入：¥{income:.2f}")
+    lines.append(f"💎 净额：¥{income - expense:.2f}")
+    return "\n".join(lines)
+
+
+def build_week_trend_reply(conn, user_id, start_date, end_date, label):
+    start_key = start_date.year * 10000 + start_date.month * 100 + start_date.day
+    end_key = end_date.year * 10000 + end_date.month * 100 + end_date.day
+    rows = conn.execute(
+        """
+        SELECT year, month, day,
+               SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+               SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income
+        FROM bills
+        WHERE user_id=?
+          AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+        GROUP BY year, month, day
+        ORDER BY year, month, day
+        """,
+        (user_id, start_key, end_key),
+    ).fetchall()
+
+    daily_map = {(r["year"], r["month"], r["day"]): r for r in rows}
+    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    lines = [f"📈 {label} 每日趋势"]
+    total_expense = 0
+    total_income = 0
+    best_day = (None, -1.0)
+
+    cur = start_date
+    while cur <= end_date:
+        rec = daily_map.get((cur.year, cur.month, cur.day))
+        exp = (rec["expense"] if rec else 0) or 0
+        inc = (rec["income"] if rec else 0) or 0
+        total_expense += exp
+        total_income += inc
+        if exp > best_day[1]:
+            best_day = (cur, exp)
+
+        wk = weekday_names[cur.weekday()]
+        lines.append(f"{wk} {cur.month}/{cur.day}：支出¥{exp:.2f}，收入¥{inc:.2f}")
+        cur += timedelta(days=1)
+
+    lines.append(f"\n💸 合计支出：¥{total_expense:.2f}")
+    lines.append(f"💰 合计收入：¥{total_income:.2f}")
+    if best_day[0] is not None and best_day[1] > 0:
+        lines.append(f"🔥 支出最高：{best_day[0].month}/{best_day[0].day}（¥{best_day[1]:.2f}）")
+    return "\n".join(lines)
+
+
 def build_visualization_link(user_id):
     base_url = os.getenv("WEB_BASE_URL", "").strip()
     if not base_url:
@@ -349,13 +439,75 @@ def chat():
         if not latest:
             conn_undo.close()
             return jsonify({"success": False, "reply": "当前账本没有可撤销的记录。", "type": "undo"})
+        source = conn_undo.execute(
+            "SELECT amount, category, description, bill_type, created_at, year, month, day FROM bills WHERE id=? AND user_id=?",
+            (latest["id"], user_id),
+        ).fetchone()
+        conn_undo.execute(
+            """
+            INSERT INTO undo_actions (user_id, amount, category, description, bill_type, source_created_at, year, month, day)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_id,
+                source["amount"],
+                source["category"],
+                source["description"],
+                source["bill_type"],
+                source["created_at"],
+                source["year"],
+                source["month"],
+                source["day"],
+            ),
+        )
         conn_undo.execute("DELETE FROM bills WHERE id=? AND user_id=?", (latest["id"], user_id))
         conn_undo.commit()
         conn_undo.close()
 
         type_text = "收入" if latest["bill_type"] == "income" else "支出"
-        reply = f"🗑️ 已撤销上一笔{type_text}：{latest['category']} ¥{latest['amount']:.2f}（{latest['description']}）"
+        reply = f"🗑️ 已撤销上一笔{type_text}：{latest['category']} ¥{latest['amount']:.2f}（{latest['description']}）\n可发送“恢复上一笔”找回。"
         return jsonify({"success": True, "reply": reply, "type": "undo", "deleted_bill_id": latest["id"]})
+
+    if message in {"恢复", "恢复上一笔", "恢复删除", "找回上一笔"}:
+        conn_restore = get_db()
+        latest_undo = conn_restore.execute(
+            """
+            SELECT id, amount, category, description, bill_type, source_created_at, year, month, day
+            FROM undo_actions
+            WHERE user_id=?
+            ORDER BY deleted_at DESC, id DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if not latest_undo:
+            conn_restore.close()
+            return jsonify({"success": False, "reply": "没有可恢复的记录。", "type": "restore"})
+
+        cursor = conn_restore.execute(
+            "INSERT INTO bills (user_id, amount, category, description, bill_type, created_at, year, month, day) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                user_id,
+                latest_undo["amount"],
+                latest_undo["category"],
+                latest_undo["description"],
+                latest_undo["bill_type"],
+                latest_undo["source_created_at"],
+                latest_undo["year"],
+                latest_undo["month"],
+                latest_undo["day"],
+            ),
+        )
+        restored_id = cursor.lastrowid
+        conn_restore.execute("DELETE FROM undo_actions WHERE id=?", (latest_undo["id"],))
+        conn_restore.commit()
+        conn_restore.close()
+        return jsonify({
+            "success": True,
+            "reply": f"♻️ 已恢复上一笔：{latest_undo['category']} ¥{latest_undo['amount']:.2f}（{latest_undo['description']}）",
+            "type": "restore",
+            "bill": {"id": restored_id},
+        })
 
     if any(kw in message for kw in ["可视化", "图表", "趋势图", "仪表盘", "看图", "看报表", "看网页"]):
         link = build_visualization_link(user_id)
@@ -376,6 +528,14 @@ def chat():
         conn_q.close()
         return jsonify({"success": True, "reply": reply, "type": "query"})
 
+    if any(kw in message for kw in ["本周趋势", "本周每天", "本周走势", "本周消费趋势"]):
+        start_this_week = now - timedelta(days=now.weekday())
+        end_this_week = now
+        conn_q = get_db()
+        reply = build_week_trend_reply(conn_q, user_id, start_this_week, end_this_week, "本周")
+        conn_q.close()
+        return jsonify({"success": True, "reply": reply, "type": "query"})
+
     date_range = extract_date_range_query(message, now)
     if date_range and (is_query_intent(message) or "到" in message or "至" in message):
         start_date, end_date, label = date_range
@@ -391,6 +551,19 @@ def chat():
         reply = build_period_summary_reply(conn_q, user_id, start_date, end_date, label)
         conn_q.close()
         return jsonify({"success": True, "reply": reply, "type": "query"})
+
+    keyword_match = re.search(r"(?:查|搜索|统计|看看)\s*([\w\u4e00-\u9fff]{1,20})", message)
+    if keyword_match and ("关键词" in message or not any(k in message for k in ["本月", "上月", "上周", "今天", "昨天"])):
+        keyword = keyword_match.group(1).strip()
+        if keyword and keyword not in {"账单", "消费", "支出", "收入", "趋势", "图表"}:
+            start_date, end_date, label = (datetime(now.year, now.month, 1), now, "本月")
+            ym = extract_year_month_query(message, now)
+            if ym:
+                start_date, end_date, label = ym
+            conn_q = get_db()
+            reply = build_keyword_summary_reply(conn_q, user_id, keyword, start_date, end_date, label)
+            conn_q.close()
+            return jsonify({"success": True, "reply": reply, "type": "query"})
 
     result = parse_bill(message)
     if result is None:
@@ -472,7 +645,10 @@ def chat():
             reply = format_summary_reply(summary, now.year, now.month)
             return jsonify({"success": True, "reply": reply, "type": "query"})
 
-        return jsonify({"success": False, "reply": "没有识别到金额，请重新输入，例如：吃饭10块、打车20元\n\n也可以查询：今天 / 昨天 / 本月 / 上月 / 查餐饮"})
+        return jsonify({
+            "success": False,
+            "reply": "没有识别到金额，请重新输入，例如：吃饭10块、打车20元\n\n也可以查询：今天 / 昨天 / 本月 / 上月 / 上周 / 3月 / 3月1日到3月15日 / 查滴滴 / 本周趋势 / 可视化",
+        })
 
     amount, category, description, bill_type = result
     now = datetime.now()
