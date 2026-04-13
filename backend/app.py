@@ -21,6 +21,9 @@ CORS(app)
 DB_PATH = os.path.join(os.path.dirname(__file__), "../data/bills.db")
 DEFAULT_USER_ID = "web-local"
 ADMIN_WEB_TOKEN = os.getenv("ADMIN_WEB_TOKEN", "")
+APP_HOST = os.getenv("APP_HOST", "0.0.0.0")
+APP_PORT = int(os.getenv("PORT", os.getenv("APP_PORT", "5000")))
+APP_DEBUG = os.getenv("FLASK_DEBUG", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 # ==================== 数据库初始化 ====================
 
@@ -623,5 +626,5 @@ if __name__ == "__main__":
         print("✅ 微信路由已启用：/wechat")
     else:
         print("ℹ️ 未启用微信路由（可安装 wechatpy 后自动启用）")
-    print("✅ 记账小助手启动成功！访问 http://localhost:5000")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    print(f"✅ 记账小助手启动成功！访问 http://localhost:{APP_PORT}")
+    app.run(host=APP_HOST, port=APP_PORT, debug=APP_DEBUG)
