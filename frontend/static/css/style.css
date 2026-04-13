@@ -192,6 +192,35 @@ body {
   margin-top: 4px;
 }
 
+.dashboard-period-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.period-chip {
+  border: 1px solid rgba(255, 124, 171, 0.18);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.period-chip.active {
+  background: linear-gradient(135deg, var(--primary), var(--primary-light));
+  color: #fff;
+  box-shadow: 0 8px 18px rgba(255, 124, 171, 0.18);
+}
+
+.period-chip:hover {
+  transform: translateY(-1px);
+}
+
 .user-switcher-card {
   background: linear-gradient(135deg, rgba(255, 193, 217, 0.5), rgba(255, 250, 253, 0.98));
   border: 1px solid rgba(255, 124, 171, 0.12);
@@ -1232,6 +1261,10 @@ body {
   color: var(--text-secondary);
   margin-bottom: 10px;
   line-height: 1.6;
+}
+
+.user-card-note + .user-card-note {
+  margin-top: -4px;
 }
 
 .user-card-meta {

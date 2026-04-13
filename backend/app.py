@@ -539,6 +539,168 @@ def build_visualization_link(user_id):
         base_url = request.url_root.rstrip("/")
     return f"{base_url}/?user_id={user_id}"
 
+
+def date_key(dt):
+    return dt.year * 10000 + dt.month * 100 + dt.day
+
+
+def get_period_window(period, year, month, day):
+    anchor = datetime(year, month, day)
+    if period == "day":
+        start = datetime(year, month, day)
+        end = start
+        label = f"{year}年{month}月{day}日"
+    elif period == "quarter":
+        quarter = ((month - 1) // 3) + 1
+        start_month = (quarter - 1) * 3 + 1
+        start = datetime(year, start_month, 1)
+        end_month = start_month + 2
+        if end_month == 12:
+            end = datetime(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            end = datetime(year, end_month + 1, 1) - timedelta(days=1)
+        label = f"{year}年Q{quarter}"
+    elif period == "year":
+        start = datetime(year, 1, 1)
+        end = datetime(year, 12, 31)
+        label = f"{year}年"
+    else:
+        start = datetime(year, month, 1)
+        if month == 12:
+            end = datetime(year + 1, 1, 1) - timedelta(days=1)
+        else:
+            end = datetime(year, month + 1, 1) - timedelta(days=1)
+        label = f"{year}年{month}月"
+    return start, end, label
+
+
+def get_summary_for_range(start_date, end_date, user_id=DEFAULT_USER_ID):
+    conn = get_db()
+    start_key = date_key(start_date)
+    end_key = date_key(end_date)
+    expense = conn.execute(
+        "SELECT SUM(amount) as total FROM bills WHERE user_id=? AND (year*10000 + month*100 + day) BETWEEN ? AND ? AND bill_type='expense'",
+        (user_id, start_key, end_key)
+    ).fetchone()["total"] or 0
+
+    income = conn.execute(
+        "SELECT SUM(amount) as total FROM bills WHERE user_id=? AND (year*10000 + month*100 + day) BETWEEN ? AND ? AND bill_type='income'",
+        (user_id, start_key, end_key)
+    ).fetchone()["total"] or 0
+
+    categories = conn.execute(
+        "SELECT category, SUM(amount) as total FROM bills WHERE user_id=? AND (year*10000 + month*100 + day) BETWEEN ? AND ? AND bill_type='expense' GROUP BY category ORDER BY total DESC",
+        (user_id, start_key, end_key)
+    ).fetchall()
+
+    count = conn.execute(
+        "SELECT COUNT(*) as cnt FROM bills WHERE user_id=? AND (year*10000 + month*100 + day) BETWEEN ? AND ?",
+        (user_id, start_key, end_key)
+    ).fetchone()["cnt"]
+
+    conn.close()
+    return {
+        "expense": expense,
+        "income": income,
+        "balance": income - expense,
+        "count": count,
+        "categories": [dict(row) for row in categories]
+    }
+
+
+def get_trend_for_period(period, year, month, day, user_id=DEFAULT_USER_ID):
+    conn = get_db()
+    trend = []
+
+    if period == "day":
+        anchor = datetime(year, month, day)
+        for offset in range(6, -1, -1):
+            current = anchor - timedelta(days=offset)
+            row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+                    SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income
+                FROM bills
+                WHERE user_id=? AND year=? AND month=? AND day=?
+                """,
+                (user_id, current.year, current.month, current.day),
+            ).fetchone()
+            trend.append({
+                "label": f"{current.month}/{current.day}",
+                "expense": row["expense"] or 0,
+                "income": row["income"] or 0,
+            })
+    elif period == "quarter":
+        quarter = ((month - 1) // 3) + 1
+        for offset in range(3, -1, -1):
+            current_quarter = quarter - offset
+            current_year = year
+            while current_quarter <= 0:
+                current_quarter += 4
+                current_year -= 1
+            start_month = (current_quarter - 1) * 3 + 1
+            start = datetime(current_year, start_month, 1)
+            if start_month + 2 == 12:
+                end = datetime(current_year + 1, 1, 1) - timedelta(days=1)
+            else:
+                end = datetime(current_year, start_month + 3, 1) - timedelta(days=1)
+            row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+                    SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income
+                FROM bills
+                WHERE user_id=? AND (year*10000 + month*100 + day) BETWEEN ? AND ?
+                """,
+                (user_id, date_key(start), date_key(end)),
+            ).fetchone()
+            trend.append({
+                "label": f"{current_year}Q{current_quarter}",
+                "expense": row["expense"] or 0,
+                "income": row["income"] or 0,
+            })
+    elif period == "year":
+        for current_year in range(year - 4, year + 1):
+            row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+                    SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income
+                FROM bills
+                WHERE user_id=? AND year=?
+                """,
+                (user_id, current_year),
+            ).fetchone()
+            trend.append({
+                "label": f"{current_year}",
+                "expense": row["expense"] or 0,
+                "income": row["income"] or 0,
+            })
+    else:
+        for offset in range(5, -1, -1):
+            total_month = (year * 12 + (month - 1)) - offset
+            current_year = total_month // 12
+            current_month = total_month % 12 + 1
+            row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) AS expense,
+                    SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) AS income
+                FROM bills
+                WHERE user_id=? AND year=? AND month=?
+                """,
+                (user_id, current_year, current_month),
+            ).fetchone()
+            trend.append({
+                "label": f"{current_month}月",
+                "expense": row["expense"] or 0,
+                "income": row["income"] or 0,
+            })
+
+    conn.close()
+    return trend
+
 # ==================== API 路由 ====================
 
 @app.route("/")
@@ -941,10 +1103,14 @@ def get_summary():
     if auth_error:
         return auth_error
 
-    year = request.args.get("year", datetime.now().year, type=int)
-    month = request.args.get("month", datetime.now().month, type=int)
-    summary = get_month_summary(year, month, get_request_user_id())
-    return jsonify({"success": True, "summary": summary})
+    now = datetime.now()
+    period = request.args.get("period", "month")
+    year = request.args.get("year", now.year, type=int)
+    month = request.args.get("month", now.month, type=int)
+    day = request.args.get("day", now.day, type=int)
+    start_date, end_date, label = get_period_window(period, year, month, day)
+    summary = get_summary_for_range(start_date, end_date, get_request_user_id())
+    return jsonify({"success": True, "summary": summary, "label": label, "period": period})
 
 @app.route("/api/budget", methods=["GET", "POST"])
 def budget():
@@ -1048,21 +1214,14 @@ def get_trend():
     if auth_error:
         return auth_error
 
+    now = datetime.now()
     user_id = get_request_user_id()
-    conn = get_db()
-    rows = conn.execute("""
-        SELECT year, month,
-            SUM(CASE WHEN bill_type='expense' THEN amount ELSE 0 END) as expense,
-            SUM(CASE WHEN bill_type='income' THEN amount ELSE 0 END) as income
-        FROM bills
-        WHERE user_id=?
-        GROUP BY year, month
-        ORDER BY year DESC, month DESC
-        LIMIT 6
-    """, (user_id,)).fetchall()
-    conn.close()
-    trend = [dict(row) for row in reversed(rows)]
-    return jsonify({"success": True, "trend": trend})
+    period = request.args.get("period", "month")
+    year = request.args.get("year", now.year, type=int)
+    month = request.args.get("month", now.month, type=int)
+    day = request.args.get("day", now.day, type=int)
+    trend = get_trend_for_period(period, year, month, day, user_id)
+    return jsonify({"success": True, "trend": trend, "period": period})
 
 @app.route("/api/bills/add", methods=["POST"])
 def add_bill_manual():

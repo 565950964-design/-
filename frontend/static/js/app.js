@@ -31,6 +31,8 @@ async function apiFetch(path, options = {}) {
 // ========== 全局状态 ==========
 let currentYear = new Date().getFullYear();
 let currentMonth = new Date().getMonth() + 1;
+let currentDay = new Date().getDate();
+let dashboardPeriod = "month";
 let billsData = [];
 let categoryChartInstance = null;
 let trendChartInstance = null;
@@ -198,8 +200,8 @@ function renderInsightCard(summary, budget) {
   }
 
   const balanceText = summary.balance >= 0
-    ? `本月结余 ${formatAmount(summary.balance)}，现金流是正的。`
-    : `本月净支出 ${formatAmount(Math.abs(summary.balance))}，注意平衡收入和支出。`;
+    ? `当前周期结余 ${formatAmount(summary.balance)}，现金流是正的。`
+    : `当前周期净支出 ${formatAmount(Math.abs(summary.balance))}，注意平衡收入和支出。`;
 
   container.innerHTML = `
     <div class="insight-pill">🍓 最高消费分类：${topCategory}</div>
@@ -221,19 +223,60 @@ const CATEGORY_COLORS = [
 
 // ========== 月份选择器 ==========
 function updateMonthLabel() {
-  document.getElementById("currentMonth").textContent = `${currentYear}年${currentMonth}月`;
+  const label = document.getElementById("currentMonth");
+  if (dashboardPeriod === "day") {
+    label.textContent = `${currentYear}年${currentMonth}月${currentDay}日`;
+  } else if (dashboardPeriod === "quarter") {
+    label.textContent = `${currentYear}年Q${Math.floor((currentMonth - 1) / 3) + 1}`;
+  } else if (dashboardPeriod === "year") {
+    label.textContent = `${currentYear}年`;
+  } else {
+    label.textContent = `${currentYear}年${currentMonth}月`;
+  }
   refreshCurrentPage();
 }
 
 document.getElementById("prevMonth").addEventListener("click", () => {
-  currentMonth--;
-  if (currentMonth < 1) { currentMonth = 12; currentYear--; }
+  if (dashboardPeriod === "day") {
+    const current = new Date(currentYear, currentMonth - 1, currentDay);
+    current.setDate(current.getDate() - 1);
+    currentYear = current.getFullYear();
+    currentMonth = current.getMonth() + 1;
+    currentDay = current.getDate();
+  } else if (dashboardPeriod === "quarter") {
+    currentMonth -= 3;
+    if (currentMonth < 1) {
+      currentMonth += 12;
+      currentYear--;
+    }
+  } else if (dashboardPeriod === "year") {
+    currentYear--;
+  } else {
+    currentMonth--;
+    if (currentMonth < 1) { currentMonth = 12; currentYear--; }
+  }
   updateMonthLabel();
 });
 
 document.getElementById("nextMonth").addEventListener("click", () => {
-  currentMonth++;
-  if (currentMonth > 12) { currentMonth = 1; currentYear++; }
+  if (dashboardPeriod === "day") {
+    const current = new Date(currentYear, currentMonth - 1, currentDay);
+    current.setDate(current.getDate() + 1);
+    currentYear = current.getFullYear();
+    currentMonth = current.getMonth() + 1;
+    currentDay = current.getDate();
+  } else if (dashboardPeriod === "quarter") {
+    currentMonth += 3;
+    if (currentMonth > 12) {
+      currentMonth -= 12;
+      currentYear++;
+    }
+  } else if (dashboardPeriod === "year") {
+    currentYear++;
+  } else {
+    currentMonth++;
+    if (currentMonth > 12) { currentMonth = 1; currentYear++; }
+  }
   updateMonthLabel();
 });
 
@@ -350,11 +393,21 @@ document.querySelectorAll(".quick-action-btn").forEach(btn => {
   btn.addEventListener("click", () => sendChat(btn.dataset.chatCmd || ""));
 });
 
+document.querySelectorAll(".period-chip").forEach(btn => {
+  btn.addEventListener("click", () => {
+    dashboardPeriod = btn.dataset.period || "month";
+    document.querySelectorAll(".period-chip").forEach(chip => chip.classList.remove("active"));
+    btn.classList.add("active");
+    updateMonthLabel();
+  });
+});
+
 // ========== 账单总览 ==========
 async function loadDashboard() {
+  const budgetCard = document.getElementById("budgetProgressCard");
   const [summaryRes, trendRes, budgetRes] = await Promise.all([
-    apiFetch(withUserId(`${API}/api/summary?year=${currentYear}&month=${currentMonth}`)),
-    apiFetch(withUserId(`${API}/api/trend`)),
+    apiFetch(withUserId(`${API}/api/summary?period=${dashboardPeriod}&year=${currentYear}&month=${currentMonth}&day=${currentDay}`)),
+    apiFetch(withUserId(`${API}/api/trend?period=${dashboardPeriod}&year=${currentYear}&month=${currentMonth}&day=${currentDay}`)),
     apiFetch(withUserId(`${API}/api/budget?year=${currentYear}&month=${currentMonth}`))
   ]);
 
@@ -367,17 +420,22 @@ async function loadDashboard() {
   document.getElementById("totalIncome").textContent = formatAmount(s.income);
   document.getElementById("totalBalance").textContent = formatAmount(s.balance);
   document.getElementById("totalCount").textContent = s.count;
-  document.getElementById("dashboardMonthLabel").textContent = `${currentYear}年${currentMonth}月账单概览`;
+  document.getElementById("dashboardMonthLabel").textContent = `${summaryData.label || `${currentYear}年${currentMonth}月`}账单概览`;
 
   currentExpense = s.expense;
   currentBudget = budgetData.budget || 0;
+  if (budgetCard) budgetCard.style.display = dashboardPeriod === "month" ? "" : "none";
   updateBudgetProgress();
 
   const todayD = new Date();
   const daysElapsed =
-    currentYear === todayD.getFullYear() && currentMonth === todayD.getMonth() + 1
-      ? todayD.getDate()
-      : new Date(currentYear, currentMonth, 0).getDate();
+    dashboardPeriod === "day"
+      ? 1
+      : currentYear === todayD.getFullYear() && currentMonth === todayD.getMonth() + 1 && dashboardPeriod === "month"
+        ? todayD.getDate()
+        : dashboardPeriod === "month"
+          ? new Date(currentYear, currentMonth, 0).getDate()
+          : Math.max(s.count, 1);
   const avgEl = document.getElementById("dailyAvg");
   if (avgEl) avgEl.textContent = formatAmount(daysElapsed > 0 ? s.expense / daysElapsed : 0);
 
@@ -453,7 +511,7 @@ function renderTrendChart(trend) {
   const ctx = document.getElementById("trendChart").getContext("2d");
   if (trendChartInstance) trendChartInstance.destroy();
 
-  const labels = (trend || []).map(t => `${t.month}月`);
+  const labels = (trend || []).map(t => t.label || `${t.month}月`);
   const expenses = (trend || []).map(t => t.expense);
   const incomes = (trend || []).map(t => t.income);
 
@@ -601,15 +659,6 @@ function renderUsersList(containerId, users, isPending) {
 
   container.innerHTML = users.map(user => renderUserCard(user, isPending)).join("");
 
-  container.querySelectorAll(".remark-save-btn").forEach(btn => {
-    btn.addEventListener("click", () => saveUserProfile(btn.dataset.userId));
-  });
-  container.querySelectorAll(".user-action-btn.approve").forEach(btn => {
-    btn.addEventListener("click", () => approveUser(btn.dataset.userId));
-  });
-  container.querySelectorAll(".user-action-btn.reject").forEach(btn => {
-    btn.addEventListener("click", () => rejectUser(btn.dataset.userId));
-  });
   container.querySelectorAll(".user-action-btn.view").forEach(btn => {
     btn.addEventListener("click", () => switchToUserBook(btn.dataset.userId));
   });
@@ -625,8 +674,6 @@ function renderUserCard(user, isPending) {
   const requestedAt = formatDateTime(user.requested_at);
   const approvedAt = formatDateTime(user.approved_at);
   const badgeText = user.status === "admin" ? "管理员" : user.status === "approved" ? "已批准" : user.status === "rejected" ? "已拒绝" : "待审批";
-  const key = encodeURIComponent(user.user_id);
-
   return `
     <div class="user-card" data-user-id="${escapeHtml(user.user_id)}">
       <div class="user-card-header">
@@ -643,21 +690,11 @@ function renderUserCard(user, isPending) {
         <span>审批人：${approver}</span>
         <span>账单数：${user.bill_count || 0}</span>
       </div>
-      <div class="user-card-remark-row">
-        <input type="text" class="form-input remark-input" id="remark-${key}" value="${escapeHtml(displayName === "未备注用户" ? "" : displayName)}" placeholder="系统备注名，例如：张三 / 家庭账本" />
-        <button class="remark-save-btn" data-user-id="${user.user_id}">保存备注</button>
-      </div>
-      <div class="user-card-remark-row">
-        <input type="text" class="form-input remark-input" id="apply-name-${key}" value="${escapeHtml(applyNickname)}" placeholder="申请昵称（来自微信申请）" />
-        <input type="text" class="form-input remark-input" id="apply-tail-${key}" value="${escapeHtml(applyTail)}" placeholder="手机尾号（4位）" />
-      </div>
-      <div class="user-card-remark-row">
-        <input type="text" class="form-input remark-input" id="apply-note-${key}" value="${escapeHtml(note === "未填写申请说明" ? "" : note)}" placeholder="申请理由/用途" />
-      </div>
+      <div class="user-card-note">系统备注：${escapeHtml(displayName)}</div>
+      <div class="user-card-note">申请昵称：${escapeHtml(applyNickname || "未填写")}</div>
+      <div class="user-card-note">手机尾号：${escapeHtml(applyTail || "未填写")}</div>
       <div class="user-actions">
         <button class="user-action-btn view" data-user-id="${user.user_id}">查看账本</button>
-        ${isPending ? `<button class="user-action-btn approve" data-user-id="${user.user_id}">批准使用</button>` : ""}
-        ${isPending ? `<button class="user-action-btn reject" data-user-id="${user.user_id}">拒绝申请</button>` : ""}
       </div>
     </div>
   `;

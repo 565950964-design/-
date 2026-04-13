@@ -116,8 +116,16 @@
     <!-- 账单总览页 -->
     <section id="page-dashboard" class="page">
       <div class="page-header">
-        <h1>账单总览</h1>
-        <p id="dashboardMonthLabel">本月支出概览</p>
+        <div>
+          <h1>账单总览</h1>
+          <p id="dashboardMonthLabel">本月支出概览</p>
+        </div>
+        <div class="dashboard-period-switcher">
+          <button class="period-chip active" data-period="month">月</button>
+          <button class="period-chip" data-period="day">日</button>
+          <button class="period-chip" data-period="quarter">季度</button>
+          <button class="period-chip" data-period="year">年</button>
+        </div>
       </div>
 
       <!-- 统计卡片 -->
@@ -320,7 +328,7 @@
     <section id="page-users" class="page">
       <div class="page-header">
         <h1>用户管理</h1>
-        <p>审批申请用户、设置备注名，并一键切换到账本查看</p>
+        <p>管理员仅查看申请信息与账本，不在网页端直接修改用户资料</p>
       </div>
 
       <div class="admin-auth-card">
