@@ -509,6 +509,22 @@ def chat():
             "bill": {"id": restored_id},
         })
 
+    if message in {"帮助", "help", "?", "？"}:
+        return jsonify({
+            "success": True,
+            "type": "help",
+            "reply": (
+                "📖 使用指南\n"
+                "记账：吃饭15块 / 打车20元 / 工资8000\n"
+                "查询：今天 / 昨天 / 本月 / 上月 / 上周 / 3月\n"
+                "区间：3月1日到3月15日消费\n"
+                "关键词：查滴滴 / 统计星巴克\n"
+                "趋势：本周趋势\n"
+                "可视化：可视化（返回网页链接）\n"
+                "纠错：撤销上一笔 / 恢复上一笔"
+            ),
+        })
+
     if any(kw in message for kw in ["可视化", "图表", "趋势图", "仪表盘", "看图", "看报表", "看网页"]):
         link = build_visualization_link(user_id)
         return jsonify({
@@ -647,7 +663,16 @@ def chat():
 
         return jsonify({
             "success": False,
-            "reply": "没有识别到金额，请重新输入，例如：吃饭10块、打车20元\n\n也可以查询：今天 / 昨天 / 本月 / 上月 / 上周 / 3月 / 3月1日到3月15日 / 查滴滴 / 本周趋势 / 可视化",
+            "reply": (
+                "没有识别到金额，请重新输入，例如：吃饭10块、打车20元\n\n"
+                "你也可以这样问：\n"
+                "- 今天 / 本月 / 上周 / 3月\n"
+                "- 3月1日到3月15日消费\n"
+                "- 查滴滴 / 统计星巴克\n"
+                "- 本周趋势 / 可视化\n"
+                "- 撤销上一笔 / 恢复上一笔\n"
+                "- 发送 帮助 查看完整说明"
+            ),
         })
 
     amount, category, description, bill_type = result

@@ -610,10 +610,11 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
             "      打车20元\n"
             "      买衣服299元\n"
             "      收到工资8000\n\n"
-            "查询：发送「本月账单」\n"
+            "基础查询：今天 / 昨天 / 本月 / 上月 / 上周\n"
             "扩展查询：发送「3月消费」「上周消费」「3月1日到3月15日消费」\n"
             "关键词：发送「查滴滴」「统计星巴克」\n"
             "趋势：发送「本周趋势」\n"
+            "图表：发送「可视化」获取网页看板链接\n"
             "纠错：发送「撤销上一笔」「恢复上一笔」\n"
             "申请：发送「申请使用 昵称:xx 尾号:1234 理由:xxx」\n"
             "查看ID：发送「我的ID」"
@@ -623,7 +624,16 @@ def handle_message(text, user_id, parse_bill_func, get_db_func, get_month_summar
     result = parse_bill_func(text)
     if result is None:
         conn.close()
-        return "没有识别到金额哦 🤔\n请重新输入，例如：吃饭10块、打车20元\n\n发送「帮助」查看使用说明"
+        return (
+            "没有识别到金额哦 🤔\n"
+            "请重新输入，例如：吃饭10块、打车20元\n\n"
+            "也可以直接这样问：\n"
+            "今天 / 本月 / 上周 / 3月\n"
+            "3月1日到3月15日消费\n"
+            "查滴滴 / 统计星巴克\n"
+            "本周趋势 / 可视化\n"
+            "发送「帮助」查看完整说明"
+        )
 
     amount, category, description, bill_type = result
     now = datetime.now()
